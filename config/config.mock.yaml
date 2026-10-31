@@ -1,0 +1,73 @@
+# PAC Sync against the local ServiceNow mock (snow-mock, http://127.0.0.1:8090).
+# Regions are "paused": render + git history only, no ZIA calls. Set SNOW_CLIENT_ID=pac-sync, SNOW_CLIENT_SECRET=pac-sync-secret.
+# every *_env key names the environment variable that holds the value.
+
+servicenow:
+  # api  = live ServiceNow Table API
+  # file = offline sample data (config/servicenow_sample_data.json), for development and tests
+  source: api
+  instance_url: http://127.0.0.1:8090
+  auth: oauth                      # oauth (client credentials) | basic
+  client_id_env: SNOW_CLIENT_ID
+  client_secret_env: SNOW_CLIENT_SECRET
+  username_env: SNOW_USERNAME      # basic auth only
+  password_env: SNOW_PASSWORD      # basic auth only
+  sample_file: config/servicenow_sample_data.json
+  page_size: 1000
+  timeout_seconds: 30
+  write_back: true                 # PATCH u_pac_rule status + insert u_pac_deployment rows
+  tables:
+    region: u_pac_region
+    proxy_profile: u_pac_proxy_profile
+    rule: u_pac_rule
+    deployment: u_pac_deployment
+
+zscaler:
+  # OneAPI (ZIdentity) credentials, see zscaler-sdk-python README
+  client_id_env: ZSCALER_CLIENT_ID
+  client_secret_env: ZSCALER_CLIENT_SECRET
+  vanity_domain_env: ZSCALER_VANITY_DOMAIN
+  cloud: ""                        # optional, e.g. "beta"; empty = production
+
+history:
+  repo_path: ./pac-history              # clone of github.com/cheikhnorris/pac-history (private)
+  push: true                       # push commits and tags to GitHub after each run
+  remote: origin
+  author_name: PAC Sync
+  author_email: pac-sync@example.com
+
+render:
+  template: templates/proxy.pac.j2
+  direct_plain_hostnames: true     # "intranet" (no dot) always goes DIRECT
+  direct_networks:                 # checked after the ServiceNow rules
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 127.0.0.0/8
+
+guardrails:
+  # A region is NOT deployed when a run would remove more than this share of its rules
+  # (protects against an empty or truncated ServiceNow answer). Override with --force.
+  max_removed_ratio: 0.2
+  min_previous_rules_for_ratio: 10
+
+deploy:
+  # stage  = create a STAGE version in ZIA only; promote with `pac-sync promote --region X`
+  # auto   = stage, then deploy and activate in the same run
+  # paused = render and commit to git, never touch ZIA
+  default_mode: paused
+  activate: true
+
+regions:
+  # Per-region override of deploy.default_mode. Region codes come from u_pac_region.u_code.
+  # Move a region to auto once its use cases are stable.
+  EMEA:
+    mode: paused
+  NA:
+    mode: paused
+  APAC:
+    mode: paused
+
+notify:
+  # Optional incoming-webhook URL (Teams / Slack) for change and failure messages
+  webhook_url_env: PAC_SYNC_WEBHOOK_URL

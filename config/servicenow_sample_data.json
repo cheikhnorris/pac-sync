@@ -1,0 +1,22 @@
+{
+  "u_pac_region": [
+    {"sys_id": "reg-emea", "u_code": "EMEA", "u_name": "Europe, Middle East, Africa", "u_zia_pac_name": "emea-proxy.pac", "u_default_profile": "prof-zs-default", "u_active": "true"},
+    {"sys_id": "reg-na", "u_code": "NA", "u_name": "North America", "u_zia_pac_name": "na-proxy.pac", "u_default_profile": "prof-zs-default", "u_active": "true"},
+    {"sys_id": "reg-apac", "u_code": "APAC", "u_name": "Asia Pacific", "u_zia_pac_name": "apac-proxy.pac", "u_default_profile": "prof-zs-default", "u_active": "true"}
+  ],
+  "u_pac_proxy_profile": [
+    {"sys_id": "prof-zs-default", "u_name": "ZS-DEFAULT", "u_proxy_chain": "PROXY ${GATEWAY}:80; PROXY ${SECONDARY_GATEWAY}:80; DIRECT", "u_active": "true"},
+    {"sys_id": "prof-partner", "u_name": "PARTNER-EGRESS", "u_proxy_chain": "PROXY partner-proxy.corp.local:8080; DIRECT", "u_active": "true"}
+  ],
+  "u_pac_rule": [
+    {"sys_id": "r1001", "number": "PACR0001001", "u_action": "direct", "u_match_type": "domain_suffix", "u_value": "corp.local", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "100", "u_state": "deployed", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "deployed", "u_deploy_version": ""},
+    {"sys_id": "r1002", "number": "PACR0001002", "u_action": "direct", "u_match_type": "ip_cidr", "u_value": "10.20.0.0/16", "u_proxy_profile": "", "u_scope": "regional", "u_regions": "reg-emea", "u_priority": "200", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "r1042", "number": "PACR0001042", "u_action": "proxy", "u_match_type": "host_exact", "u_value": "Portal.Partner-Example.com", "u_proxy_profile": "prof-partner", "u_scope": "regional", "u_regions": "reg-emea,reg-na", "u_priority": "300", "u_state": "approved", "u_valid_from": "", "u_valid_to": "2099-04-30 23:59:59", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "r1043", "number": "PACR0001043", "u_action": "proxy", "u_match_type": "url_pattern", "u_value": "https://sso.partner-example.com/*", "u_proxy_profile": "prof-partner", "u_scope": "regional", "u_regions": "reg-na", "u_priority": "310", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "r1050", "number": "PACR0001050", "u_action": "direct", "u_match_type": "host_exact", "u_value": "teams-media.example.net", "u_proxy_profile": "", "u_scope": "regional", "u_regions": "reg-apac", "u_priority": "400", "u_state": "approved", "u_valid_from": "2099-01-01 00:00:00", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "r1051", "number": "PACR0001051", "u_action": "direct", "u_match_type": "host_exact", "u_value": "old-vendor.example.org", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "500", "u_state": "deployed", "u_valid_from": "", "u_valid_to": "2020-01-01 00:00:00", "u_deploy_status": "deployed", "u_deploy_version": ""},
+    {"sys_id": "r1052", "number": "PACR0001052", "u_action": "direct", "u_match_type": "domain_suffix", "u_value": "legacy-app.example.com", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "500", "u_state": "retire_requested", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "deployed", "u_deploy_version": ""},
+    {"sys_id": "r1060", "number": "PACR0001060", "u_action": "direct", "u_match_type": "host_exact", "u_value": "https://bad-entry.example.com", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "500", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "r1061", "number": "PACR0001061", "u_action": "proxy", "u_match_type": "domain_suffix", "u_value": "corp.local", "u_proxy_profile": "prof-zs-default", "u_scope": "regional", "u_regions": "reg-emea", "u_priority": "600", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""}
+  ]
+}
