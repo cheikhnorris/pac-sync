@@ -5,3 +5,6 @@ __pycache__/
 config/config.yaml
 pac-history/
 pac-history-mock/
+.env
+.env.tmp
+sim-zia/

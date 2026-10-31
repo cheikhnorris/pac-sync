@@ -26,6 +26,11 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 | `deployer.py` | ZIA `pac_files` stage/deploy/unstage, `activate` |
 | `writeback.py` | ServiceNow `u_pac_rule` status updates |
 | `main.py` | Orchestration, guardrails, lock, CLI |
+| `simzia.py` | Simulated ZIA (`zscaler.target: simulated`): SDK-shaped client, state in `sim-zia/` |
+| `envfile.py` | `.env` loading/writing, `ConfigError`, `require_env` (names the variable, never the value) |
+| `doctor.py` | Read-only connectivity and configuration checks (`pac-sync doctor`) |
+| `setup_wizard.py` | `pac-sync setup`: writes git-ignored `config/config.yaml` and `.env` |
+| `start-poc.ps1` / `.cmd` | One-click POC launcher (prereqs, venv, setup, mock, doctor, first run) |
 
 ## Invariants (do not break)
 
@@ -36,7 +41,12 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 - **Determinism:** same input -> byte-identical PAC (rules sorted by `PacRule.sort_key`). No timestamps in PAC content.
 - **Git is the history of record:** ZIA keeps only 10 versions per PAC file.
 - **Safety:** guardrails (removed-rules ratio, zero rules abort), one region failing never stops the others, run lock.
-- **Secrets:** never in code, config or fixtures. Config holds env-var names only (`*_env` keys).
+- **Secrets:** never in code, config or fixtures. Config holds env-var names only (`*_env` keys); values live in the
+  environment or the git-ignored `.env`. Never log a value: report "set (N chars)". Mask credentials in git remote URLs.
+- **History scope:** pac-sync stages, commits, diffs and discards `regions/` only; other folders in the history repo
+  (e.g. `backups/` written by `snow-mock/backup.ps1` under the shared `.pac-sync.lock`) are never touched.
+- **Live safety:** `deploy.live_max_mode` caps what a region may do on a live target; automatic bootstrap is refused on
+  a capped live target (use `pac-sync bootstrap --region X --yes`).
 - **ZIA calls are not verified against a live tenant** (see README "Verify before production"). Tests use a fake ZIA or the real SDK with mocked HTTP (`tests/test_deployer_sdk.py`).
 
 ## Conventions

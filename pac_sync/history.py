@@ -6,17 +6,25 @@ Layout:
     regions/<CODE>/state.json    ZIA state: pac_id, last staged / deployed version + hash + commit
 
 One commit per run that changes something; one tag per ZIA deployment: <CODE>-v<version>.
+PAC Sync commits, diffs and discards only under regions/: other files in the repository are left alone.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import List, Optional
 
 log = logging.getLogger(__name__)
+REGIONS = "regions"
+
+
+def redact(text: str) -> str:
+    """Hide credentials embedded in remote URLs (https://user:token@host) before logging an error."""
+    return re.sub(r"(://)[^/@\s]+@", r"\1***@", text)
 
 
 class GitHistory:
@@ -31,7 +39,7 @@ class GitHistory:
             ["git", *self._ident, *args], cwd=self.root, capture_output=True, text=True, check=False
         )
         if check and proc.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+            raise RuntimeError(f"git {' '.join(args)} failed: {redact(proc.stderr.strip())}")
         return proc.stdout.strip()
 
     def ensure(self) -> None:
@@ -46,7 +54,7 @@ class GitHistory:
             "# PAC history\n\nManaged by PAC Sync. Do not edit by hand: every file is regenerated from ServiceNow.\n",
             encoding="utf-8",
         )
-        self.commit("Initialize PAC history repository")
+        self.commit("Initialize PAC history repository", everything=True)
 
     def _dir(self, code: str) -> Path:
         path = self.root / "regions" / code
@@ -83,21 +91,37 @@ class GitHistory:
             json.dump(data, fh, indent=2, sort_keys=True)
             fh.write("\n")
 
-    def commit(self, message: str) -> Optional[str]:
-        self._git("add", "-A")
-        if not self._git("status", "--porcelain"):
+    def commit(self, message: str, everything: bool = False) -> Optional[str]:
+        """Commit changes under regions/ only. Other files in the repo (e.g. snow-mock backups) are never touched;
+        ``everything`` is for the initial commit made by ensure()."""
+        if everything:
+            self._git("add", "-A")
+            if not self._git("status", "--porcelain"):
+                return None
+            self._git("commit", "-m", message)
+            return self.head()
+        if not (self.root / REGIONS).exists():
             return None
-        self._git("commit", "-m", message)
+        self._git("add", "-A", "--", REGIONS)
+        if not self._git("diff", "--cached", "--name-only", "--", REGIONS):
+            return None
+        self._git("commit", "-m", message, "--", REGIONS)
         return self.head()
 
     def diff_stat(self) -> str:
-        self._git("add", "-A")
-        return self._git("diff", "--cached", "--stat")
+        if not (self.root / REGIONS).exists():
+            return ""
+        self._git("add", "-A", "--", REGIONS)
+        return self._git("diff", "--cached", "--stat", "--", REGIONS)
 
     def discard(self) -> None:
-        """Drop uncommitted changes (used by --dry-run)."""
-        self._git("reset", "-q", "--hard", "HEAD")
-        self._git("clean", "-fdq")
+        """Drop uncommitted changes under regions/ (used by --dry-run). Nothing outside regions/ is touched."""
+        if not (self.root / REGIONS).exists():
+            return
+        self._git("reset", "-q", "--", REGIONS)
+        if self._git("ls-tree", "-d", "HEAD", REGIONS, check=False):
+            self._git("checkout", "-q", "HEAD", "--", REGIONS)
+        self._git("clean", "-fdq", "--", REGIONS)
 
     def head(self) -> str:
         return self._git("rev-parse", "HEAD")

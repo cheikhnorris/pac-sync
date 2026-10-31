@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Build per-region PAC files from ServiceNow, keep their history in git, deploy them to Zscaler ZIA."
 requires-python = ">=3.10"
 dependencies = [
-    "zscaler-sdk-python>=1.0",
+    "zscaler-sdk-python>=1.11,<2",
     "requests>=2.31",
     "jinja2>=3.1",
     "pyyaml>=6.0",

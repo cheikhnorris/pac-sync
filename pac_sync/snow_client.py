@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Dict, List
 
 import requests
+
+from .envfile import require_env
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ class ServiceNowClient:
         self._session.headers.update({"Accept": "application/json", "Content-Type": "application/json"})
         self._token_expiry = 0.0
         if cfg.get("auth", "oauth") == "basic":
-            self._session.auth = (os.environ[cfg["username_env"]], os.environ[cfg["password_env"]])
+            why = "servicenow.auth=basic"
+            self._session.auth = (require_env(cfg["username_env"], why), require_env(cfg["password_env"], why))
 
     def _ensure_token(self) -> None:
         if self._cfg.get("auth", "oauth") != "oauth" or time.time() < self._token_expiry - 60:
@@ -43,8 +45,8 @@ class ServiceNowClient:
             f"{self.base}/oauth_token.do",
             data={
                 "grant_type": "client_credentials",
-                "client_id": os.environ[self._cfg["client_id_env"]],
-                "client_secret": os.environ[self._cfg["client_secret_env"]],
+                "client_id": require_env(self._cfg["client_id_env"], "servicenow.auth=oauth"),
+                "client_secret": require_env(self._cfg["client_secret_env"], "servicenow.auth=oauth"),
             },
             timeout=self.timeout,
         )
@@ -86,6 +88,12 @@ class ServiceNowClient:
             if len(page) < self.page_size:
                 return rows
             offset += self.page_size
+
+    def probe(self, table: str) -> int:
+        """Read at most one record (doctor): proves the token and the table ACL. Return the rows read."""
+        rows = self._request("GET", f"/api/now/table/{table}",
+                             params={"sysparm_limit": 1, "sysparm_fields": "sys_id"}).get("result", [])
+        return len(rows)
 
     def fetch_regions(self) -> List[dict]:
         return self.get_all(self.tables["region"], "u_active=true", REGION_FIELDS)

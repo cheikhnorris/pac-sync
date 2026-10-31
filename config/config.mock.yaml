@@ -1,6 +1,7 @@
-# PAC Sync against the local ServiceNow mock (snow-mock, http://127.0.0.1:8090).
-# Regions are "paused": render + git history only, no ZIA calls. Set SNOW_CLIENT_ID=pac-sync, SNOW_CLIENT_SECRET=pac-sync-secret.
-# every *_env key names the environment variable that holds the value.
+# PAC Sync local demo: ServiceNow mock (snow-mock, http://127.0.0.1:8090) + simulated ZIA. Nothing leaves this machine.
+# Credentials: SNOW_CLIENT_ID=pac-sync, SNOW_CLIENT_SECRET=pac-sync-secret (the mock's public demo client), loaded
+# from .env (`pac-sync setup --profile mock` writes it). No ZIA credentials are needed while target is simulated.
+# Every *_env key names the environment variable that holds the value.
 
 servicenow:
   # api  = live ServiceNow Table API
@@ -23,15 +24,24 @@ servicenow:
     deployment: u_pac_deployment
 
 zscaler:
-  # OneAPI (ZIdentity) credentials, see zscaler-sdk-python README
+  # simulated = local stand-in for ZIA (pac_sync/simzia.py), state in simulated.state_dir; no tenant is called
+  # live      = real tenant through zscaler-sdk-python (absent = live)
+  target: simulated
+  simulated:
+    state_dir: ./sim-zia           # pacfiles.json + <pac name>/v<N>.pac + <pac name>/deployed.pac
+  # missing = a run creates a region's PAC file when ZIA has none (first version DEPLOYED); off = fail the region
+  bootstrap: missing
+  pac_domain: example.com          # domain ZIA requires to create a PAC file (bootstrap)
+  # Live tenant only, see config.example.yaml: auth (oneapi | legacy) and the *_env names of its credentials.
+  auth: oneapi
   client_id_env: ZSCALER_CLIENT_ID
   client_secret_env: ZSCALER_CLIENT_SECRET
   vanity_domain_env: ZSCALER_VANITY_DOMAIN
   cloud: ""                        # optional, e.g. "beta"; empty = production
 
 history:
-  repo_path: ./pac-history              # clone of github.com/cheikhnorris/pac-history (private)
-  push: true                       # push commits and tags to GitHub after each run
+  repo_path: ./pac-history-mock    # local only, created by the first run
+  push: false                      # never pushed
   remote: origin
   author_name: PAC Sync
   author_email: pac-sync@example.com
@@ -55,18 +65,21 @@ deploy:
   # stage  = create a STAGE version in ZIA only; promote with `pac-sync promote --region X`
   # auto   = stage, then deploy and activate in the same run
   # paused = render and commit to git, never touch ZIA
-  default_mode: paused
+  default_mode: stage
   activate: true
+  # The most any region may do while zscaler.target is live (absent = no cap). Switching this profile to
+  # target: live therefore stages only: nothing reaches production until `pac-sync promote --region X`.
+  live_max_mode: stage
 
 regions:
   # Per-region override of deploy.default_mode. Region codes come from u_pac_region.u_code.
   # Move a region to auto once its use cases are stable.
   EMEA:
-    mode: paused
+    mode: auto
   NA:
-    mode: paused
+    mode: stage
   APAC:
-    mode: paused
+    mode: auto
 
 notify:
   # Optional incoming-webhook URL (Teams / Slack) for change and failure messages

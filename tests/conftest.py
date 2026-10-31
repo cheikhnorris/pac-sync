@@ -26,3 +26,14 @@ def regions(sample, profiles):
         r["sys_id"]: Region(r["sys_id"], r["u_code"], r["u_zia_pac_name"], profiles[r["u_default_profile"]].chain)
         for r in sample["u_pac_region"]
     }
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ():
+    """load_env_file writes to os.environ: undo it after each test."""
+    import os
+
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)

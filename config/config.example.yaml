@@ -23,11 +23,28 @@ servicenow:
     deployment: u_pac_deployment
 
 zscaler:
+  # live      = real tenant through zscaler-sdk-python (absent = live)
+  # simulated = local stand-in for ZIA (pac_sync/simzia.py), for demos and tests; no tenant is called
+  target: live
+  # simulated:
+  #   state_dir: ./sim-zia         # simulated target only
+  # oneapi = OneAPI / ZIdentity (default) | legacy = ZIA API key + admin user (tenants not migrated to ZIdentity)
+  auth: oneapi
   # OneAPI (ZIdentity) credentials, see zscaler-sdk-python README
   client_id_env: ZSCALER_CLIENT_ID
   client_secret_env: ZSCALER_CLIENT_SECRET
   vanity_domain_env: ZSCALER_VANITY_DOMAIN
+  # private_key_env: ZSCALER_PRIVATE_KEY   # set to use a private key (PEM text or file path) instead of the secret
   cloud: ""                        # optional, e.g. "beta"; empty = production
+  # Legacy credentials (auth: legacy), defaults shown:
+  # username_env: ZIA_USERNAME
+  # password_env: ZIA_PASSWORD
+  # api_key_env: ZIA_API_KEY
+  # legacy_cloud_env: ZIA_CLOUD    # e.g. zscalertwo
+  # Creating a missing PAC file (bootstrap). off (default) = the region fails until `pac-sync bootstrap --region X`;
+  # missing = a run creates it, first version DEPLOYED (refused on a live target capped by deploy.live_max_mode).
+  # bootstrap: off
+  # pac_domain: example.com        # domain ZIA requires to create a PAC file
 
 history:
   repo_path: ./pac-history         # git repository holding every PAC version
@@ -57,6 +74,7 @@ deploy:
   # paused = render and commit to git, never touch ZIA
   default_mode: stage
   activate: true
+  # live_max_mode: stage           # most a region may do while zscaler.target is live (absent = no cap)
 
 regions:
   # Per-region override of deploy.default_mode. Region codes come from u_pac_region.u_code.
