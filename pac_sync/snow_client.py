@@ -68,7 +68,7 @@ class ServiceNowClient:
                 log.warning("ServiceNow %s %s -> %s, retry in %ss", method, path, type(exc).__name__, 2**attempt)
                 time.sleep(2**attempt)
                 continue
-            if resp.status_code == 401 and not refreshed and self._cfg.get("auth", "oauth") == "oauth":
+            if resp.status_code == 401 and not refreshed and attempt < 4 and self._cfg.get("auth", "oauth") == "oauth":
                 refreshed = True
                 self._token_expiry = 0.0  # revoked or expired early: fetch a new token once
                 continue

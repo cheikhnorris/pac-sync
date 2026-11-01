@@ -8,7 +8,7 @@ then reports the result back to the request. No more hand edits in the ZIA porta
 | --- | --- |
 | **Input** | Approved `u_pac_rule` records in ServiceNow (or the local mock [`snow-mock`](https://github.com/cheikhnorris/snow-mock)) |
 | **Output** | One PAC file per region in ZIA (EMEA, APAC, NA, ...), each change a ZIA PAC version |
-| **History** | ZIA's own PAC versions (`versions`, `diff`, `rollback`), optionally a git repository too |
+| **History** | `history.mode`: `git` (default, a git repository per region), `zia` (ZIA's own PAC versions only, used by the demo profile) or `both`; `versions`, `diff` and `rollback` read ZIA |
 | **Safety** | Validation on both sides, 20% removal guardrail, drift detection, never activates other admins' changes, separation of duties |
 | **Runs** | On a schedule (every 15 minutes), on demand, or in Docker |
 
@@ -61,14 +61,18 @@ sequenceDiagram
 
 ### Region modes and versions
 
+Each region has a configured mode (`regions.<CODE>.mode` in the config). Drift or a rollback pauses the region
+on top of that mode until someone runs `pac-sync resume`.
+
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> stage: new region
-    stage --> auto: stable
-    auto --> paused: drift (portal edit) or rollback
-    stage --> paused: drift or rollback
-    paused --> auto: pac-sync resume
+    stage --> auto: config change, once stable
+    stage --> held: drift (portal edit) or rollback
+    auto --> held: drift (portal edit) or rollback
+    held --> stage: pac-sync resume (configured mode)
+    held --> auto: pac-sync resume (configured mode)
     note right of stage: version saved as STAGE,<br/>pac-sync promote makes it live
     note right of auto: staged, deployed and<br/>activated in one run
 ```
