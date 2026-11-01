@@ -40,7 +40,7 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 
 ## Invariants (do not break)
 
-- **Validation parity:** `normalizer.py` and `..\snow-mock\src\validation.php` implement the same rules. Change both together.
+- **Validation parity:** `normalizer.py` and `..\snow-mock\src\validation.php` implement the same rules. Change both together; `tests/test_validation_parity.py` runs both on the same cases.
 - **Contract with ServiceNow:** table and field names (`u_pac_rule`, `u_state`, `u_deploy_*`, ...) are defined in the
   "PAC Sync - ServiceNow Implementation Requirements" document and in `..\snow-mock\src\schema.php`. Renaming one breaks the integration.
 - **No injection:** every ServiceNow value reaching the PAC goes through `validate_value` and is emitted as a JSON string literal (`renderer.js`).

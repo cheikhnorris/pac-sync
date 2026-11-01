@@ -78,9 +78,17 @@ def make_zscaler_client(cfg: dict):
 
 
 def close_zscaler_client(client) -> None:
-    """End the SDK session. The legacy client deauthenticates here, which may also activate pending changes."""
+    """End the SDK session, unless ZIA has pending changes.
+
+    Both SDK clients end the ZIA session on close (legacy always, OneAPI after any write: request_executor.deauthenticate)
+    and ZIA activates pending changes when a session ends, so closing would activate what skip_activate_if_pending left.
+    """
     exit_ = getattr(client, "__exit__", None)
     if exit_ is None:
+        return
+    if ZiaDeployer(client).activation_pending():
+        log.warning("ZIA has pending changes: the API session is left to expire instead of being closed, because closing "
+                    "it would activate them. Review and activate them in the ZIA portal.")
         return
     try:
         exit_(None, None, None)

@@ -270,8 +270,9 @@ def check_zia(ctx: Context) -> List[Check]:
     zcfg = cfg.get("zscaler") or {}
     checks: List[Check] = []
     if (zcfg.get("auth") or "oneapi") == "legacy" and zscaler_target(zcfg) == "live" and skip_activate_if_pending(cfg):
-        checks.append((WARN, "zia legacy", "auth: legacy and skip_activate_if_pending: closing a legacy session activates "
-                                           "pending changes anyway (SDK README, context manager): use OneAPI for the demo"))
+        checks.append((WARN, "zia legacy", "auth: legacy and skip_activate_if_pending: ending a ZIA session activates "
+                                           "pending changes; PAC Sync then leaves the session to expire, which ZIA is not "
+                                           "documented to treat differently: use OneAPI for the demo"))
     try:
         client = make_zscaler_client(zcfg)
     except Exception as exc:  # ConfigError for a missing variable, ValueError from the SDK constructor
@@ -378,7 +379,7 @@ def check_probe(ctx: Context) -> List[Check]:
     Prefixed names only. It runs only when activate.status() is ACTIVE beforehand, so the activation afterwards publishes
     nothing but the probe (an unactivated probe would leave ZIA PENDING and block skip_activate_if_pending later). At the
     10-version cap it deletes the same safe version a stage would (WARN, archive)."""
-    from .main import build_message, evict_hook, make_deployer, make_history, run_id
+    from .main import build_message, evict_hook, make_deployer, make_history, run_id, run_lock
 
     cfg, zcfg = ctx.cfg, ctx.cfg.get("zscaler") or {}
     region = next((r for r in (ctx.source_data[0].values() if ctx.source_data else []) if r.code == ctx.region), None)
@@ -404,22 +405,23 @@ def check_probe(ctx: Context) -> List[Check]:
                                           "the ZIA portal first")]
         names = {name: region.code}
         history = make_history(cfg, push=False, deployer=deployer, name_for=lambda code: name)
-        deployer.on_evict = evict_hook(cfg, history, names)
-        message = build_message(run_id(datetime.now(timezone.utc)), region.code, kind="probe")
-        steps = deployer.probe_write(pac_id, message)
-        left = [v for v in deployer.versions(pac_id) if v.pac_version_status == "STAGE"]
-        checks = [(OK if res == "ok" else FAIL, f"write probe {step}", res if res != "ok" else f"{name}: ok")
-                  for step, res in steps]
-        if left:
-            checks.append((FAIL, "write probe cleanup", f"a STAGE version is left on '{name}': unstage it in the portal "
-                                                        "(nothing was activated)"))
-        elif all(res == "ok" for _, res in steps):
-            try:
-                deployer.activate()
-                checks.append((OK, "write probe", "no STAGE left; activated (nothing else was pending)"))
-            except Exception as exc:
-                checks.append((FAIL, "write probe activate", f"the probe's changes are saved in ZIA but NOT activated: {exc}. "
-                                                             "Activate in the ZIA portal before running PAC Sync"))
+        with run_lock(history.root):  # a run starting meanwhile would see the probe's STAGE version
+            deployer.on_evict = evict_hook(cfg, history, names)
+            message = build_message(run_id(datetime.now(timezone.utc)), region.code, kind="probe")
+            steps = deployer.probe_write(pac_id, message)
+            left = [v for v in deployer.versions(pac_id) if v.pac_version_status == "STAGE"]
+            checks = [(OK if res == "ok" else FAIL, f"write probe {step}", res if res != "ok" else f"{name}: ok")
+                      for step, res in steps]
+            if left:
+                checks.append((FAIL, "write probe cleanup", f"a STAGE version is left on '{name}': unstage it in the portal "
+                                                            "(nothing was activated)"))
+            elif all(res == "ok" for _, res in steps):
+                try:
+                    deployer.activate()
+                    checks.append((OK, "write probe", "no STAGE left; activated (nothing else was pending)"))
+                except Exception as exc:
+                    checks.append((FAIL, "write probe activate", f"the probe's changes are saved in ZIA but NOT activated: {exc}. "
+                                                                 "Activate in the ZIA portal before running PAC Sync"))
         return checks
     except Exception as exc:
         return [(FAIL, "write probe", str(exc))]

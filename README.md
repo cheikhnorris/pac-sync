@@ -3,6 +3,9 @@
 Builds one PAC file per region from ServiceNow, keeps every version in git, and deploys it to Zscaler ZIA with
 `zscaler-sdk-python`. Designed to run on a schedule (every 15 minutes is a good default).
 
+High-level overview: [docs/OVERVIEW.md](docs/OVERVIEW.md). Step-by-step setup on another laptop (local demo and real
+tenant): [docs/SETUP-NEW-LAPTOP.md](docs/SETUP-NEW-LAPTOP.md).
+
 ## Quick start (5 minutes)
 
 Needs git, Python 3.10 - 3.12 and PHP 8.4 (the launcher offers `winget install PHP.PHP.8.4`). Double-click
@@ -54,9 +57,10 @@ Demo script:
 | Legacy (not on ZIdentity) | `target: live`, `auth: legacy` | `ZIA_USERNAME`, `ZIA_PASSWORD`, `ZIA_API_KEY`, `ZIA_CLOUD` (e.g. `zscalertwo`) |
 | Simulated | `target: simulated` | none |
 
-`.env` is plaintext and git-ignored: protect the file (NTFS permissions) on a shared host. The legacy client
-deauthenticates when PAC Sync closes it, and ZIA may activate pending changes at that moment (SDK README, "ZIA and
-ZTW Context Manager").
+`.env` is plaintext and git-ignored: protect the file (NTFS permissions) on a shared host. Ending a ZIA API
+session activates pending changes, and both SDK clients end it on close (legacy always, OneAPI after any write). So
+PAC Sync closes the client only when `activate.status()` is ACTIVE; otherwise it logs a warning and leaves the session
+to expire, so other admins' pending changes are not activated by PAC Sync.
 
 ```
 ServiceNow (u_pac_region, u_pac_proxy_profile, u_pac_rule)
@@ -219,8 +223,8 @@ pending changes, and `history.mode: zia` needs no git. EMEA and APAC are `auto`,
 
 **Checklist before the demo**
 
-1. Auth mode: OneAPI (recommended). Legacy works, but closing a legacy session activates pending changes, which defeats
-   the activation guard (doctor warns).
+1. Auth mode: OneAPI (recommended). Legacy works too (doctor warns). With either one, ZIA activates pending changes
+   when an API session ends, so PAC Sync leaves the session to expire when changes are pending.
 2. A ZIA admin role with full access to Hosted PAC Files plus activation, and nothing else (the exact permission names are
    unverified; check them in your tenant). OneAPI: a ZIdentity API client with that role: client id, client secret (or a
    private key), the vanity domain, the cloud if not production. Legacy: API key, cloud, admin user and password.
@@ -304,7 +308,8 @@ of the two.
 **Not activated.** With `deploy.skip_activate_if_pending`, `activate.status()` is read before the first write. Anything but
 ACTIVE means someone else has pending changes: versions are saved, `activate()` is never called, the run exits 1 and
 the log, the notification, `u_pac_deployment.u_summary` and each rule's `u_deploy_message` say "saved in ZIA, not
-activated: other pending changes exist; review and activate in the portal". The rules of those regions stay `staged` with
+activated: other changes were pending or the activation failed (see the log); review and activate in the portal". The
+rules of those regions stay `staged` with
 "saved in ZIA as EMEA v3, not activated: activate in the portal; the next run confirms" and keep their `u_state`, so the
 request stays open; they become `deployed` (and the request closes) on a later run that finds ZIA ACTIVE, which also logs a
 `u_pac_deployment` row "activation confirmed". Other regions' rules get no such note. A PAC file created that way is not cloned

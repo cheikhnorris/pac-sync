@@ -6,7 +6,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from .normalizer import NormalizeResult
 
-NOT_ACTIVATED = "saved in ZIA, not activated: other pending changes exist; review and activate in the portal"
+NOT_ACTIVATED = ("saved in ZIA, not activated: other changes were pending or the activation failed (see the log); "
+                 "review and activate in the portal")
 NOT_ACTIVATED_RULE = "saved in ZIA as {versions}, not activated: activate in the portal; the next run confirms"
 
 

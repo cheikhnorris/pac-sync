@@ -611,7 +611,7 @@ def _write_back(cfg, source, result, raw_rules, states, plans, commit, now, not_
         if not (p.staged_now or p.deployed_now or p.error or p.confirmed):
             continue
         st = states[p.region.code]
-        live = p.deployed_now or (p.confirmed and bool(st.get("deployed")))
+        live = p.deployed_now or (p.confirmed and bool(st.get("deployed")) and not st.get("staged"))
         version = (st.get("deployed") if live else st.get("staged")) or {}
         summary = (p.zia_message + "\n" if p.zia_message else "") \
             + ("activation confirmed: the saved version is live\n" if p.confirmed else "") + _summary(p) \

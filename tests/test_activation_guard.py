@@ -180,3 +180,23 @@ def test_retire_waits_while_activation_is_pending():
 
     assert compute_rule_updates(*args, not_activated={"EMEA"}) == []
     assert compute_rule_updates(*args)[0][1]["u_state"] == "retired"
+
+
+def test_client_is_not_closed_while_zia_has_pending_changes():
+    # Closing ends the ZIA session, and ZIA activates pending changes when a session ends.
+    from types import SimpleNamespace
+    from pac_sync.deployer import close_zscaler_client
+
+    class Client:
+        def __init__(self, status):
+            self.closed = False
+            self.zia = SimpleNamespace(pac_files=None, activate=SimpleNamespace(
+                status=lambda: (SimpleNamespace(status=status), None, None)))
+
+        def __exit__(self, *exc):
+            self.closed = True
+
+    pending, active = Client("PENDING"), Client("ACTIVE")
+    close_zscaler_client(pending)
+    close_zscaler_client(active)
+    assert not pending.closed and active.closed

@@ -21,6 +21,8 @@ URL_RE = re.compile(r"^https?://[a-z0-9.*\-]+(:\d{1,5})?(/[^\s\"';\\]*)?$")
 # must not be able to end the comment (a newline would inject code). Same check in snow-mock/src/validation.php.
 NUMBER_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
 FORBIDDEN_CHARS = set("\"';\\\r\n\t ")
+# Printable ASCII only: U+2028 and the like end a line in older PAC engines, and \d / \s differ between Python and PHP.
+NON_PRINTABLE_RE = re.compile(r"[^\x21-\x7e]")
 # Suffixes that must never be sent DIRECT or PROXY as a whole (V3). Extend as needed.
 PUBLIC_SUFFIXES = {
     "com", "net", "org", "io", "info", "biz", "local", "corp",
@@ -50,6 +52,8 @@ def validate_value(match_type: str, value: str) -> Optional[str]:
     """Return an error message, or None when the value is valid for its match type."""
     if not value:
         return "empty value"
+    if NON_PRINTABLE_RE.search(value):
+        return "value must be printable ASCII (no spaces, control or non-ASCII characters)"
     if FORBIDDEN_CHARS & set(value):
         return "value contains a forbidden character (quote, semicolon, backslash or whitespace)"
 
@@ -62,6 +66,8 @@ def validate_value(match_type: str, value: str) -> Optional[str]:
         if value in PUBLIC_SUFFIXES:
             return f"domain_suffix '{value}' is a public suffix"
     elif match_type == "ip_cidr":
+        if "/" not in value:
+            return "ip_cidr needs a prefix, e.g. 10.20.0.0/16"
         try:
             net = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
