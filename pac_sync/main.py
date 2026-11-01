@@ -384,20 +384,22 @@ def sync(cfg: dict, dry_run: bool = False, force: bool = False, promote: Optiona
             # Still unconfirmed after this run: the mark survives until ZIA is active again (or someone activates).
             not_activated_regions = {c for c, st in states.items() if st.get("not_activated")}
             not_activated = bool(not_activated_regions)
-            _write_back(cfg, source, result, raw_rules, states, plans, content_commit, now, not_activated_regions)
+            wb_failed = _write_back(cfg, source, result, raw_rules, states, plans, content_commit, now,
+                                    not_activated_regions)
 
             failures = [p for p in plans if p.error or p.blocked]
             changes = [p for p in plans if p.staged_now or p.deployed_now]
-            if failures or changes or result.rejected or push_error or not_activated:
+            if failures or changes or result.rejected or push_error or not_activated or wb_failed:
                 notify(cfg, "PAC Sync\n" + "\n".join(_summary(p) for p in plans)
                        + (f"\nRejected rules: {len(result.rejected)}" if result.rejected else "")
                        + (f"\n{NOT_ACTIVATED}" if not_activated else "")
-                       + (f"\nGit push failed: {push_error}" if push_error else ""))
+                       + (f"\nGit push failed: {push_error}" if push_error else "")
+                       + (f"\nServiceNow write-back failed: {wb_failed} (the next run retries)" if wb_failed else ""))
             for p in plans:
                 log.info(_summary(p))
             if not_activated:
                 log.warning(NOT_ACTIVATED)
-            return 1 if failures or push_error or not_activated else 0
+            return 1 if failures or push_error or not_activated or wb_failed else 0
     finally:
         close_zscaler_client(client)
 
@@ -595,18 +597,35 @@ def _summary(p: RegionPlan) -> str:
     return f"{p.region.code}: {what} (+{len(p.added)} -{len(p.removed)}, sha256 {p.hash[:12]})"
 
 
-def _write_back(cfg, source, result, raw_rules, states, plans, commit, now, not_activated=frozenset()) -> None:
+def _unreachable(exc: Exception) -> bool:
+    """ServiceNow is down or refuses every call (auth): the other writes would fail the same way."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status is None or status >= 500 or status in (401, 403)
+
+
+def _write_back(cfg, source, result, raw_rules, states, plans, commit, now, not_activated=frozenset()) -> str:
+    """Write rule statuses and deployment rows. Return "" or what failed.
+
+    Rule statuses heal by themselves: the next run compares ServiceNow with the live state and re-sends them.
+    """
     if not cfg["servicenow"].get("write_back", True):
-        return
+        return ""
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     hashes = {p.region.code: p.hash for p in plans if not p.blocked}
     raw_by_id = {r["sys_id"]: r for r in raw_rules}
     failed = {p.region.code: p.error for p in plans if p.error}
-    for sys_id, body in compute_rule_updates(result, raw_by_id, states, hashes, now_str, failed, not_activated):
+    errors = 0
+    updates = compute_rule_updates(result, raw_by_id, states, hashes, now_str, failed, not_activated)
+    for i, (sys_id, body) in enumerate(updates):
         try:
             source.update_rule(sys_id, body)
         except Exception as exc:
+            errors += 1
             log.error("write-back to %s failed: %s", sys_id, exc)
+            if _unreachable(exc):
+                log.error("ServiceNow unreachable: %d more rule update(s) and the deployment rows not sent",
+                          len(updates) - i - 1)
+                return f"{len(updates) - i} rule update(s) and the deployment rows ({exc})"
     for p in plans:
         if not (p.staged_now or p.deployed_now or p.error or p.confirmed):
             continue
@@ -630,7 +649,9 @@ def _write_back(cfg, source, result, raw_rules, states, plans, commit, now, not_
                 "u_finished": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             })
         except Exception as exc:
+            errors += 1
             log.error("deployment log for %s failed: %s", p.region.code, exc)
+    return f"{errors} write(s), see the log" if errors else ""
 
 
 def _render_region(cfg: dict, code: str):

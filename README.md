@@ -213,6 +213,18 @@ regions/EMEA/state.json    pac_id, staged {version, hash, commit}, deployed {ver
 - **Linux cron:** `*/15 * * * * cd /opt/pac-sync && .venv/bin/pac-sync run >> /var/log/pac-sync.log 2>&1`
 - **Windows Task Scheduler:** action `C:\pac-sync\.venv\Scripts\pac-sync.exe`, arguments `run`, start in `C:\pac-sync`, repeat every 15 minutes.
 - **Kubernetes:** a `CronJob` with `concurrencyPolicy: Forbid`, the history repo cloned from its remote at start, `history.push: true`.
+- **Docker:** the image does one `pac-sync run` per start. Mount a folder at `/data` holding `config/config.yaml`
+  and `.env`; the state file and the lock (`history.mode: zia`) land beside them. For `git` / `both`, set
+  `history.repo_path: /data/pac-history`.
+  ```
+  docker build -t pac-sync .
+  docker run --rm -v /srv/pac-sync:/data pac-sync                 # one run; cron it: */15 * * * * docker run ...
+  docker run --rm -v /srv/pac-sync:/data pac-sync doctor           # any other command
+  ```
+  From a container, the local mock is `http://host.docker.internal:8090`, and the mock only answers localhost:
+  start it with `SNOW_MOCK_ALLOWED_CLIENTS` set to the Docker network (for example `172.16.0.0/12`).
+- **Write-back failures** (ServiceNow down, a refused update) make the run exit 1 and are notified. Rule statuses
+  are re-sent by the next run; a missed deployment row is not.
 
 ## Demo on a real tenant
 

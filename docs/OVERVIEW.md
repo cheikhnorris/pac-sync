@@ -70,6 +70,8 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
 | PAC Sync activates another admin's pending ZIA changes | Before the first write, PAC Sync reads the activation status. If changes are already pending, it saves its versions but never activates them. The API session is also left to expire instead of being closed, because closing it would activate the pending changes. |
 | Someone edits the PAC file by hand in the portal | Drift detection pauses that region until someone reviews it (`resume` or `run --force`). |
 | A demo touches production PAC files | The demo profile prefixes every file name (`demo-`), and a guard refuses any write to a file without that prefix before a request is sent. |
+| One person pushes a rule through alone | Separation of duties in the approval workflow: nobody approves their own request or two steps of the same request, admins included. |
+| ServiceNow is down during the write-back | The run stops writing at the first unreachable error, exits 1 and notifies; the next run re-sends the rule statuses. |
 | Two runs overlap | A lock file per history folder. The mock's backup job uses the same lock. |
 | Secrets leak | Credentials live only in a git-ignored `.env` or the environment. Logs show variable names and lengths, never values. |
 
@@ -78,7 +80,7 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
 | Area | State |
 | --- | --- |
 | ServiceNow mock: catalog, approvals, tables, Table API with OAuth | Done |
-| pac-sync with the mock and the simulated ZIA: all commands | Done; 175 automated tests |
+| pac-sync with the mock and the simulated ZIA: all commands | Done; 182 automated tests |
 | Full demo flow against the mock (bootstrap, run, promote, versions, diff, rollback, resume) | Rehearsed end to end on the demo profile (simulated tenant) |
 | Real ZIA tenant | Built against the SDK source and checked call by call. **Not yet run against a tenant**: see below. |
 
@@ -92,11 +94,8 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
 
 ## What comes next
 
-- **Phase 2:**
-  - write-back hardening;
-  - validation parity tests between ServiceNow and pac-sync;
-  - separation of duties;
-  - a Docker image for scheduled runs.
+- **Phase 2 (done):** write-back hardening, validation parity tests between ServiceNow and pac-sync, separation
+  of duties, a Docker image for scheduled runs (README, Scheduling).
 - **Phase 3:**
   - OS keyring for credentials;
   - a ZIA verification command;

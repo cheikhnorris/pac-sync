@@ -58,7 +58,18 @@ class ServiceNowClient:
     def _request(self, method: str, path: str, **kwargs) -> dict:
         for attempt in range(1, 5):
             self._ensure_token()
-            resp = self._session.request(method, f"{self.base}{path}", timeout=self.timeout, **kwargs)
+            try:
+                resp = self._session.request(method, f"{self.base}{path}", timeout=self.timeout, **kwargs)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # POST is not idempotent: a timed-out insert may have landed, so it is not sent twice.
+                if method == "POST" or attempt == 4:
+                    raise
+                log.warning("ServiceNow %s %s -> %s, retry in %ss", method, path, type(exc).__name__, 2**attempt)
+                time.sleep(2**attempt)
+                continue
+            if resp.status_code == 401 and attempt == 1 and self._cfg.get("auth", "oauth") == "oauth":
+                self._token_expiry = 0.0  # revoked or expired early: fetch a new token once
+                continue
             if resp.status_code in (429, 502, 503, 504) and attempt < 4:
                 wait = int(resp.headers.get("Retry-After", 2**attempt))
                 log.warning("ServiceNow %s %s -> %s, retry in %ss", method, path, resp.status_code, wait)

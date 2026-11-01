@@ -1,0 +1,5 @@
+*
+!pyproject.toml
+!pac_sync/
+!templates/
+**/__pycache__
