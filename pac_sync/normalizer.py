@@ -19,6 +19,7 @@ HOST_RE = re.compile(rf"^(?=.{{1,253}}$){_LABEL}(\.{_LABEL})*$")
 URL_RE = re.compile(r"^https?://[a-z0-9.*\-]+(:\d{1,5})?(/[^\s\"';\\]*)?$")
 # The rule number is written into the PAC as a `// <number> <ACTION>` comment and read back by history mode zia, so it
 # must not be able to end the comment (a newline would inject code). Same check in snow-mock/src/validation.php.
+CIDR_RE = re.compile(r"\d{1,3}(\.\d{1,3}){3}/\d{1,2}")
 NUMBER_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
 FORBIDDEN_CHARS = set("\"';\\\r\n\t ")
 # Printable ASCII only: U+2028 and the like end a line in older PAC engines, and \d / \s differ between Python and PHP.
@@ -68,6 +69,8 @@ def validate_value(match_type: str, value: str) -> Optional[str]:
     elif match_type == "ip_cidr":
         if "/" not in value:
             return "ip_cidr needs a prefix, e.g. 10.20.0.0/16"
+        if not CIDR_RE.fullmatch(value):  # IPv4Network would also take netmasks and /008
+            return "ip_cidr must look like 10.20.0.0/16"
         try:
             net = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:

@@ -31,11 +31,13 @@ CASES = [
     ("ip_cidr", "10.20.0.0/16"), ("ip_cidr", "10.20.0.1/16"), ("ip_cidr", "10.0.0.0/7"), ("ip_cidr", "10.0.0.1/32"),
     ("ip_cidr", "10.0.0.0/33"), ("ip_cidr", "256.0.0.0/8"), ("ip_cidr", "010.0.0.0/8"), ("ip_cidr", "10.0.0.0/08"),
     ("ip_cidr", "10.0.0.0"), ("ip_cidr", "::1/128"), ("ip_cidr", "10.0.0.0/16/1"),
+    ("ip_cidr", "10.0.0.0/255.0.0.0"), ("ip_cidr", "10.20.0.0/255.255.0.0"), ("ip_cidr", "10.0.0.0/0.255.255.255"),
+    ("ip_cidr", "10.0.0.0/008"),
     # url_pattern
     ("url_pattern", "https://sso.partner.com/*"), ("url_pattern", "http://a.com:8080/x"), ("url_pattern", "ftp://a.com"),
     ("url_pattern", "https://*.*.*.a.com/*"), ("url_pattern", "https://a.com/*/*/*"), ("url_pattern", "https://A.com/"),
-    ("url_pattern", "https://a.com:123456/"), ("url_pattern", "https://a.com:١٢/"),
-    ("url_pattern", "https://a.com/x y"), ("url_pattern", "https://a.com/x y"), ("url_pattern", "https://a.com"),
+    ("url_pattern", "https://a.com:123456/"), ("url_pattern", "https://a.com:\u0661\u0662/"),
+    ("url_pattern", "https://a.com/x\u00a0y"), ("url_pattern", "https://a.com/x\u2028y"), ("url_pattern", "https://a.com"),
     # control characters, one per family where Python and PHP regexes differ
     ("host_exact", "a.com\x00"), ("url_pattern", "https://a.com/x\x0by"), ("url_pattern", "https://a.com/x\x1cy"),
     ("url_pattern", "https://a.com/x\x7fy"),
@@ -54,6 +56,8 @@ def find_php():
 def test_python_and_php_validators_agree():
     php = find_php()
     if not php or not VALIDATION_PHP.exists():
+        if os.environ.get("PAC_SYNC_REQUIRE_PHP") == "1":
+            pytest.fail("PAC_SYNC_REQUIRE_PHP=1 but php or ../snow-mock is missing")
         pytest.skip("needs php and ../snow-mock")
     script = ("require $argv[1]; $out = [];"
               "foreach (json_decode(stream_get_contents(STDIN), true) as [$t, $v]) { $out[] = pac_validate_value($t, $v); }"

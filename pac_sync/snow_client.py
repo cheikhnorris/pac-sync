@@ -56,6 +56,7 @@ class ServiceNowClient:
         self._token_expiry = time.time() + int(body.get("expires_in", 1800))
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
+        refreshed = False
         for attempt in range(1, 5):
             self._ensure_token()
             try:
@@ -67,7 +68,8 @@ class ServiceNowClient:
                 log.warning("ServiceNow %s %s -> %s, retry in %ss", method, path, type(exc).__name__, 2**attempt)
                 time.sleep(2**attempt)
                 continue
-            if resp.status_code == 401 and attempt == 1 and self._cfg.get("auth", "oauth") == "oauth":
+            if resp.status_code == 401 and not refreshed and self._cfg.get("auth", "oauth") == "oauth":
+                refreshed = True
                 self._token_expiry = 0.0  # revoked or expired early: fetch a new token once
                 continue
             if resp.status_code in (429, 502, 503, 504) and attempt < 4:

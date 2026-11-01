@@ -394,7 +394,7 @@ def sync(cfg: dict, dry_run: bool = False, force: bool = False, promote: Optiona
                        + (f"\nRejected rules: {len(result.rejected)}" if result.rejected else "")
                        + (f"\n{NOT_ACTIVATED}" if not_activated else "")
                        + (f"\nGit push failed: {push_error}" if push_error else "")
-                       + (f"\nServiceNow write-back failed: {wb_failed} (the next run retries)" if wb_failed else ""))
+                       + (f"\nServiceNow write-back failed: {wb_failed} (rule statuses are re-sent by the next run)" if wb_failed else ""))
             for p in plans:
                 log.info(_summary(p))
             if not_activated:

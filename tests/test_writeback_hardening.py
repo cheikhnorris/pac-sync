@@ -95,3 +95,43 @@ def test_write_back_goes_on_after_one_refused_record(monkeypatch):
 
 def test_write_back_success_reports_nothing(monkeypatch):
     assert write_back(monkeypatch, Source({})) == ""
+
+
+@pytest.mark.parametrize("status", [503, 401, 403])
+def test_write_back_stops_on_http_status(monkeypatch, status):
+    source = Source({"r1": requests.HTTPError(str(status), response=Resp(status))})
+    assert "3 rule update(s)" in write_back(monkeypatch, source)
+
+
+def test_a_late_first_401_still_refreshes_the_token(client, monkeypatch):
+    client._cfg["auth"] = "oauth"
+    tokens = []
+    monkeypatch.setattr(client, "_ensure_token", lambda: tokens.append(client._token_expiry))
+    calls = script(client, [Resp(503), Resp(401), Resp(200)])
+    client._token_expiry = 9e18
+    client.update_rule("r1", {})
+    assert calls == ["PATCH"] * 3 and tokens[-1] == 0.0
+
+
+def test_deployment_log_failures_are_counted(monkeypatch):
+    plan = main.RegionPlan(region=type("R", (), {"code": "EMEA", "sys_id": "x"})(), content="", hash="h", error="boom")
+    source = Source({})
+    source.log_deployment = lambda body: (_ for _ in ()).throw(requests.HTTPError("400", response=Resp(400)))
+    monkeypatch.setattr(main, "compute_rule_updates", lambda *a: [])
+    out = main._write_back({"servicenow": {}}, source, None, [], {"EMEA": {}}, [plan], "", datetime.now(timezone.utc))
+    assert out == "1 write(s), see the log"
+
+
+def test_sync_exits_1_when_write_back_fails(tmp_path, monkeypatch):
+    from pac_sync.snow_client import FileServiceNowSource
+    from .helpers import demo_cfg
+
+    cfg = demo_cfg(tmp_path, monkeypatch)
+
+    def refuse(self, sys_id, body):
+        raise requests.HTTPError("503", response=Resp(503))
+    monkeypatch.setattr(FileServiceNowSource, "update_rule", refuse)
+    notes = []
+    monkeypatch.setattr(main, "notify", lambda cfg, text: notes.append(text))
+    assert main.sync(cfg) == 1
+    assert any("write-back failed" in n for n in notes)

@@ -1,10 +1,80 @@
 # PAC Sync
 
-Builds one PAC file per region from ServiceNow, keeps every version in git, and deploys it to Zscaler ZIA with
-`zscaler-sdk-python`. Designed to run on a schedule (every 15 minutes is a good default).
+**PAC exceptions as an approved, versioned, reversible workflow.** Users request a PAC exception in ServiceNow.
+Once it is approved, PAC Sync rebuilds that region's PAC file and deploys it to Zscaler ZIA as a new PAC version,
+then reports the result back to the request. No more hand edits in the ZIA portal.
 
-High-level overview: [docs/OVERVIEW.md](docs/OVERVIEW.md). Step-by-step setup on another laptop (local demo and real
-tenant): [docs/SETUP-NEW-LAPTOP.md](docs/SETUP-NEW-LAPTOP.md).
+| | |
+| --- | --- |
+| **Input** | Approved `u_pac_rule` records in ServiceNow (or the local mock [`snow-mock`](https://github.com/cheikhnorris/snow-mock)) |
+| **Output** | One PAC file per region in ZIA (EMEA, APAC, NA, ...), each change a ZIA PAC version |
+| **History** | ZIA's own PAC versions (`versions`, `diff`, `rollback`), optionally a git repository too |
+| **Safety** | Validation on both sides, 20% removal guardrail, drift detection, never activates other admins' changes, separation of duties |
+| **Runs** | On a schedule (every 15 minutes), on demand, or in Docker |
+
+Read next: [docs/OVERVIEW.md](docs/OVERVIEW.md) (high-level) and [docs/SETUP-NEW-LAPTOP.md](docs/SETUP-NEW-LAPTOP.md)
+(step-by-step setup: local demo, then a real tenant).
+
+### How it fits together
+
+```mermaid
+flowchart LR
+    U([Requester]) -->|Request PAC exception| SN
+    subgraph SN [ServiceNow]
+        CAT[Catalog item] --> APR[Approvals<br/>manager, security, CAB]
+        APR --> RULES[(u_pac_rule<br/>approved)]
+    end
+    RULES -->|Table API, OAuth| PS
+    subgraph PS [pac-sync run]
+        V[Validate] --> R[Render one PAC<br/>per region] --> D{Changed?}
+    end
+    D -->|yes| ZIA
+    subgraph ZIA [Zscaler ZIA]
+        ST[New version STAGE] --> DEP[DEPLOY + activate]
+    end
+    D -->|no| SKIP[Leave region alone]
+    DEP --> WB[Write-back:<br/>rule deployed, request closed,<br/>deployment row]
+    WB --> SN
+```
+
+### One change, end to end
+
+```mermaid
+sequenceDiagram
+    actor J as Requester
+    participant S as ServiceNow
+    participant P as pac-sync
+    participant Z as ZIA
+    J->>S: New rule: DIRECT partner.example (EMEA)
+    S->>S: Validate V1-V12, manager then security approve
+    P->>S: Read approved rules
+    P->>P: Validate again, render EMEA, compare hash
+    P->>Z: activation status (pending changes from others?)
+    P->>Z: clone_pac_file: version N+1 as STAGE
+    alt region mode auto
+        P->>Z: DEPLOY version N+1, activate
+    else region mode stage
+        Note over P,Z: waits for pac-sync promote --region EMEA
+    end
+    P->>S: rule = deployed (EMEA:vN+1), request closed, deployment row
+```
+
+### Region modes and versions
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> stage: new region
+    stage --> auto: stable
+    auto --> paused: drift (portal edit) or rollback
+    stage --> paused: drift or rollback
+    paused --> auto: pac-sync resume
+    note right of stage: version saved as STAGE,<br/>pac-sync promote makes it live
+    note right of auto: staged, deployed and<br/>activated in one run
+```
+
+ZIA keeps 10 versions per PAC file. PAC Sync picks the version to delete itself and never deletes the live, staged
+or LKG (last known good) one. `pac-sync rollback --region X --to lkg` redeploys a known-good version in seconds.
 
 ## Quick start (5 minutes)
 
@@ -61,22 +131,6 @@ Demo script:
 session activates pending changes, and both SDK clients end it on close (legacy always, OneAPI after any write). So
 PAC Sync closes the client only when `activate.status()` is ACTIVE; otherwise it logs a warning and leaves the session
 to expire, so other admins' pending changes are not activated by PAC Sync.
-
-```
-ServiceNow (u_pac_region, u_pac_proxy_profile, u_pac_rule)
-   │ Table API, read
-   ▼
-normalize + validate ──► rejected rules → u_deploy_status=failed in ServiceNow
-   │ per region, sorted by priority
-   ▼
-render (templates/proxy.pac.j2) ──► git: regions/<CODE>/proxy.pac + rules.json, one commit per change
-   │
-   ▼
-ZIA: clone as STAGE ─► activate ─► (auto mode) DEPLOY ─► activate ──► git: state.json + tag <CODE>-v<N>
-   │
-   ▼
-write-back: u_pac_rule status, u_pac_deployment log row, webhook notification
-```
 
 The ServiceNow side (tables, workflow, validation, integration account) is specified in the
 **PAC Sync – ServiceNow Implementation Requirements** document. The field names there are the contract with this code.
