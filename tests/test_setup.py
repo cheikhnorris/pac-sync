@@ -65,3 +65,32 @@ def test_custom_legacy_secrets_go_to_env_only(tmp_path):
                    "ZIA_PASSWORD": "zia-Password-2", "ZIA_API_KEY": "zia-ApiKey-3", "ZIA_CLOUD": "zscalertwo"}
     for secret in ("snow-Secret-1", "zia-Password-2", "zia-ApiKey-3"):
         assert secret not in text and secret not in out
+
+
+def test_demo_profile_with_injected_answers(tmp_path):
+    answers = iter([
+        "2", "client-1", "acme", "beta",   # ZIA: OneAPI secret, client id, vanity domain, cloud
+        "acme-lab.com", "lab-",            # PAC domain, prefix
+    ])
+    secrets = iter(["zia-Secret-XYZ"])
+    code, out = _run(tmp_path, profile="demo", ask=lambda prompt: next(answers), ask_secret=lambda prompt: next(secrets))
+    assert code == 0
+    text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    cfg = yaml.safe_load(text)
+    z = cfg["zscaler"]
+    assert (z["target"], z["auth"], z["pac_name_prefix"], z["only_prefixed"], z["pac_domain"]) == \
+        ("live", "oneapi", "lab-", True, "acme-lab.com")
+    assert z["cloud"] == "beta" and z["bootstrap"] == "missing"
+    assert cfg["history"]["mode"] == "zia" and cfg["deploy"]["skip_activate_if_pending"] is True
+    assert "live_max_mode" not in cfg["deploy"]
+    assert {k: v["mode"] for k, v in cfg["regions"].items()} == {"EMEA": "auto", "NA": "stage", "APAC": "auto"}
+    env = parse_env_file(str(tmp_path / ".env"))
+    assert env == {"SNOW_CLIENT_ID": "pac-sync", "SNOW_CLIENT_SECRET": "pac-sync-secret", "ZSCALER_CLIENT_ID": "client-1",
+                   "ZSCALER_CLIENT_SECRET": "zia-Secret-XYZ", "ZSCALER_VANITY_DOMAIN": "acme"}
+    assert "zia-Secret-XYZ" not in text and "zia-Secret-XYZ" not in out  # credentials only in .env
+
+
+def test_demo_profile_non_interactive_keeps_the_safe_defaults(tmp_path):
+    assert _run(tmp_path, profile="demo", non_interactive=True)[0] == 0
+    z = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["zscaler"]
+    assert z["pac_name_prefix"] == "demo-" and z["only_prefixed"] is True and z["target"] == "live"

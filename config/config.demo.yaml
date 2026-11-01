@@ -1,0 +1,103 @@
+# PAC Sync demo against a REAL Zscaler ZIA tenant, driven by the ServiceNow mock (snow-mock, http://127.0.0.1:8090).
+# Safety design: every PAC file this profile touches is named with the prefix below ("demo-emea-proxy.pac"), no ZCC
+# profile or app profile references those files, and the prefix guard refuses any write to another PAC file before a
+# request is sent. Other admins' pending changes are never activated by PAC Sync. Nothing is pushed anywhere.
+# Credentials: SNOW_CLIENT_ID=pac-sync, SNOW_CLIENT_SECRET=pac-sync-secret (the mock's public demo client) and the
+# ZIA credentials named below, all in .env (`pac-sync setup --profile demo` writes it; .env is git-ignored).
+# Every *_env key names the environment variable that holds the value.
+
+servicenow:
+  # api  = live ServiceNow Table API (here: the local mock)
+  # file = offline sample data (config/servicenow_sample_data.json), for development and tests
+  source: api
+  instance_url: http://127.0.0.1:8090
+  auth: oauth                      # oauth (client credentials) | basic
+  client_id_env: SNOW_CLIENT_ID
+  client_secret_env: SNOW_CLIENT_SECRET
+  username_env: SNOW_USERNAME      # basic auth only
+  password_env: SNOW_PASSWORD      # basic auth only
+  sample_file: config/servicenow_sample_data.json
+  page_size: 1000
+  timeout_seconds: 30
+  write_back: true                 # PATCH u_pac_rule status + insert u_pac_deployment rows
+  tables:
+    region: u_pac_region
+    proxy_profile: u_pac_proxy_profile
+    rule: u_pac_rule
+    deployment: u_pac_deployment
+
+zscaler:
+  # live      = real tenant through zscaler-sdk-python (absent = live)
+  # simulated = local stand-in (pac_sync/simzia.py), state in simulated.state_dir; no tenant is called
+  target: live
+  # oneapi = OneAPI / ZIdentity (recommended for the demo) | legacy = API key + admin user (its session close
+  # activates pending changes, which defeats skip_activate_if_pending: doctor warns)
+  auth: oneapi
+  client_id_env: ZSCALER_CLIENT_ID
+  client_secret_env: ZSCALER_CLIENT_SECRET
+  vanity_domain_env: ZSCALER_VANITY_DOMAIN
+  # private_key_env: ZSCALER_PRIVATE_KEY   # set to use a private key (PEM text or file path) instead of the secret
+  cloud: ""                        # optional, e.g. "beta"; empty = production
+  # Legacy credentials (auth: legacy), defaults shown:
+  # username_env: ZIA_USERNAME
+  # password_env: ZIA_PASSWORD
+  # api_key_env: ZIA_API_KEY
+  # legacy_cloud_env: ZIA_CLOUD    # e.g. zscalertwo
+  # Effective ZIA name = pac_name_prefix + u_pac_region.u_zia_pac_name. Pick a prefix no existing file or ZCC profile uses.
+  pac_name_prefix: demo-
+  # true = EVERY write (stage, deploy, unstage, LKG, bootstrap, rollback, cleanup, probe) on a PAC file without the
+  # prefix raises ConfigError before any request. Reads stay allowed. Needs a non-empty prefix.
+  only_prefixed: true
+  # missing = a run creates a missing PAC file for an auto-mode region (first version DEPLOYED, then activated);
+  # stage-mode regions are bootstrapped with `pac-sync bootstrap --region X --yes`. off = fail the region.
+  bootstrap: missing
+  pac_domain: example.com          # domain ZIA requires to create a PAC file (setup asks for yours)
+
+history:
+  # git  = repository at repo_path (default) | both = git + archive of every version ZIA deletes
+  # zia  = no git: the ZIA PAC versions are the history; pauses and errors live in state_file
+  mode: zia
+  state_file: ./pac-state.json     # git-ignored; pauses, last errors, "not activated" marks
+  # archive_dir: ./pac-archive     # keep content of versions ZIA deletes at the 10-version cap (otherwise only logged)
+  push: false                      # no git, nothing to push
+
+render:
+  template: templates/proxy.pac.j2
+  direct_plain_hostnames: true     # "intranet" (no dot) always goes DIRECT
+  direct_networks:                 # checked after the ServiceNow rules
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 127.0.0.0/8
+
+guardrails:
+  # A region is NOT deployed when a run would remove more than this share of its rules
+  # (protects against an empty or truncated ServiceNow answer). Override with --force.
+  max_removed_ratio: 0.2
+  min_previous_rules_for_ratio: 10
+
+deploy:
+  # stage  = create a STAGE version in ZIA only; promote with `pac-sync promote --region X`
+  # auto   = stage, then deploy and activate in the same run
+  # paused = render and commit to git, never touch ZIA
+  default_mode: stage
+  activate: true
+  # No live_max_mode here: the prefixed files are referenced by nothing, so auto is safe.
+  # true = read activate.status() before the first write; when it is not ACTIVE (someone else has pending changes)
+  # versions are saved but NOT activated, the run exits 1 and says so in the log, ServiceNow and the notification.
+  skip_activate_if_pending: true
+  # true = after a successful deploy and activation, mark the previous deployed version LKG (rollback --to lkg).
+  mark_lkg_after_deploy: false
+
+regions:
+  # Per-region override of deploy.default_mode. Region codes come from u_pac_region.u_code.
+  EMEA:
+    mode: auto
+  NA:
+    mode: stage                    # shows the review step: `pac-sync promote --region NA`
+  APAC:
+    mode: auto
+
+notify:
+  # Optional incoming-webhook URL (Teams / Slack) for change and failure messages
+  webhook_url_env: PAC_SYNC_WEBHOOK_URL

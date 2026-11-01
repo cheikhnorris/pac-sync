@@ -76,3 +76,4 @@ def test_values_never_logged_or_in_errors(tmp_path, monkeypatch, caplog):
     with pytest.raises(ConfigError) as err:
         require_env("PS_TEST_SECRET", "unit test")
     assert "PS_TEST_SECRET" in str(err.value) and SECRET not in str(err.value)
+

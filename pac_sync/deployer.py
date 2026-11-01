@@ -8,7 +8,8 @@ the auth mode from `zscaler.auth` (oneapi | legacy, absent = oneapi). Every clie
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from datetime import datetime
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .envfile import ConfigError, require_env
 
@@ -16,6 +17,8 @@ log = logging.getLogger(__name__)
 
 TARGETS = ("simulated", "live")
 AUTH_MODES = ("oneapi", "legacy")
+MAX_VERSIONS = 10  # ZIA keeps at most 10 versions per PAC file
+PROTECTED = ("DEPLOYED", "LKG", "STAGE")  # never deleted to make room
 
 
 class DeployError(RuntimeError):
@@ -35,10 +38,12 @@ def zscaler_target(cfg: dict) -> str:
 
 def make_zscaler_client(cfg: dict):
     """Build the ZIA client for `zscaler.target` / `zscaler.auth`. Missing env vars raise ConfigError (name only)."""
+    validate_prefix_config(cfg)
     if zscaler_target(cfg) == "simulated":
         from .simzia import SimulatedZscalerClient
 
-        return SimulatedZscalerClient((cfg.get("simulated") or {}).get("state_dir") or "./sim-zia")
+        sim = cfg.get("simulated") or {}
+        return SimulatedZscalerClient(sim.get("state_dir") or "./sim-zia", bool(sim.get("strict_commit")))
 
     auth = cfg.get("auth") or "oneapi"
     if auth == "oneapi":
@@ -90,17 +95,71 @@ def _unwrap(result, what: str):
     return value
 
 
+def effective_pac_name(zcfg: dict, base: str) -> str:
+    """The ZIA PAC file name for a region: `zscaler.pac_name_prefix` + `u_zia_pac_name`."""
+    return f"{(zcfg or {}).get('pac_name_prefix') or ''}{base}"
+
+
+def validate_prefix_config(zcfg: dict) -> None:
+    if (zcfg or {}).get("only_prefixed") and not (zcfg or {}).get("pac_name_prefix"):
+        raise ConfigError("zscaler.only_prefixed: true needs a non-empty zscaler.pac_name_prefix")
+
+
+def to_epoch(value) -> Optional[int]:
+    """ZIA timestamps: epoch seconds or milliseconds (format unverified), or an ISO string. Return epoch seconds."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return int(number / 1000) if number > 1e11 else int(number)
+
+
 class ZiaDeployer:
     """Stage, deploy, roll back and activate PAC file versions.
 
-    ZIA keeps at most 10 versions per PAC file; clone_pac_file evicts the oldest
-    automatically, which is why git (not ZIA) is the history of record.
+    ZIA keeps at most 10 versions per PAC file. `stage` picks the version to delete itself (never DEPLOYED, LKG or
+    STAGE; the SDK would otherwise delete the lowest number) and reports it through ``on_evict`` first.
+    ``prefix`` / ``only_prefixed`` (set by main from zscaler.pac_name_prefix / only_prefixed) make every write on a
+    PAC file whose name lacks the prefix raise ConfigError before any request is sent. The versions list is cached
+    per pac_id for the life of the instance; every write drops it.
     """
 
     def __init__(self, client, dry_run: bool = False):
         self.client = client
         self.pac = client.zia.pac_files if client else None
         self.dry_run = dry_run
+        self.prefix = ""
+        self.only_prefixed = False
+        self.on_evict: Optional[Callable[[object], None]] = None
+        self._cache: Dict[int, Tuple[bool, List]] = {}
+        self._names: Dict[int, str] = {}
+
+    # -- guard ---------------------------------------------------------------------------------------------------
+    def assert_writable(self, pac_id: Optional[int] = None, name: Optional[str] = None) -> None:
+        if not self.only_prefixed:
+            return
+        if not self.prefix:
+            raise ConfigError("zscaler.only_prefixed: true needs a non-empty zscaler.pac_name_prefix")
+        if name is None:
+            name = self._names.get(pac_id)
+            if name is None:  # never ask ZIA here: a refusal must not be preceded by a request
+                raise ConfigError(f"refusing to write PAC id {pac_id}: zscaler.only_prefixed is on and its name is not known, "
+                                  "so the guard cannot check it (look it up by name first: find_pac_id)")
+        if not str(name).startswith(self.prefix):
+            raise ConfigError(f"refusing to write PAC file '{name}': zscaler.only_prefixed is on and the name does not "
+                              f"start with '{self.prefix}'")
+
+    # -- reads ---------------------------------------------------------------------------------------------------
+    def list_files(self) -> List:
+        files = _unwrap(self.pac.list_pac_files(query_params={"filter": "pac_content"}), "list_pac_files")
+        for f in files or []:
+            self._names[f.id] = f.name
+        return list(files or [])
 
     def find_pac_id(self, name: str) -> int:
         files = _unwrap(
@@ -114,12 +173,47 @@ class ZiaDeployer:
             )
         if len(matches) > 1:
             raise DeployError(f"expected exactly one ZIA PAC file named '{name}', found {len(matches)}")
-        return matches.pop()
+        pac_id = matches.pop()
+        self._names[pac_id] = name
+        return pac_id
 
+    def versions(self, pac_id: int, with_content: bool = False) -> List:
+        cached = self._cache.get(pac_id)
+        if cached and (cached[0] or not with_content):
+            return cached[1]
+        params = None if with_content else {"filter": "pac_content"}
+        found = _unwrap(self.pac.get_pac_file(pac_id, query_params=params), "get_pac_file")
+        self._cache[pac_id] = (with_content, found)
+        return found
+
+    @staticmethod
+    def _by_status(versions: List, status: str) -> Optional[object]:
+        found = [v for v in versions if v.pac_version_status == status]
+        return max(found, key=lambda v: int(v.pac_version)) if found else None
+
+    def deployed_info(self, pac_id: int) -> Optional[object]:
+        """The DEPLOYED version object (message, times, author), or None."""
+        return self._by_status(self.versions(pac_id), "DEPLOYED")
+
+    def deployed_version(self, pac_id: int) -> Optional[int]:
+        found = self.deployed_info(pac_id)
+        return int(found.pac_version) if found is not None else None
+
+    def activation_pending(self) -> bool:
+        """True unless activate.status() says ACTIVE. Unreadable status counts as pending (the safe answer)."""
+        try:
+            value = _unwrap(self.client.zia.activate.status(), "activate status")
+            return str(getattr(value, "status", value)).upper() != "ACTIVE"
+        except Exception as exc:
+            log.warning("cannot read the ZIA activation status, treating it as pending: %s", exc)
+            return True
+
+    # -- writes --------------------------------------------------------------------------------------------------
     def bootstrap(self, name: str, content: str, domain: str, message: str) -> int:
         """Create the PAC file with ``content`` as its first, DEPLOYED version. Return the new pac_id."""
         if not domain:
             raise DeployError("zscaler.pac_domain is not set: ZIA needs a domain to create a PAC file")
+        self.assert_writable(name=name)
         try:
             created = _unwrap(
                 self.pac.add_pac_file(
@@ -140,27 +234,16 @@ class ZiaDeployer:
         pac_id = getattr(created, "id", None)
         if pac_id is None:  # response did not echo the id: look it up
             pac_id = self.find_pac_id(name)
+        self._names[int(pac_id)] = name
         log.info("Bootstrapped PAC file '%s' (id %s)", name, pac_id)
         return int(pac_id)
-
-    def deployed_version(self, pac_id: int) -> Optional[int]:
-        found = self._by_status(self.versions(pac_id), "DEPLOYED")
-        return int(found.pac_version) if found is not None else None
-
-    def versions(self, pac_id: int, with_content: bool = False) -> List:
-        params = None if with_content else {"filter": "pac_content"}
-        return _unwrap(self.pac.get_pac_file(pac_id, query_params=params), "get_pac_file")
-
-    @staticmethod
-    def _by_status(versions: List, status: str) -> Optional[object]:
-        found = [v for v in versions if v.pac_version_status == status]
-        return max(found, key=lambda v: int(v.pac_version)) if found else None
 
     def stage(self, pac_id: int, content: str, message: str) -> int:
         """Create a new STAGE version from the deployed one. Return its version number."""
         if self.dry_run:
             log.info("[dry-run] would stage PAC %s: %s", pac_id, message)
             return -1
+        self.assert_writable(pac_id)
         versions = self.versions(pac_id, with_content=True)
         deployed = self._by_status(versions, "DEPLOYED")
         if deployed is None:
@@ -169,6 +252,9 @@ class ZiaDeployer:
         if old_stage is not None:
             # Keep at most one staged version: the newest render replaces the previous one.
             self._action(pac_id, old_stage, "UNSTAGE")
+            versions = self.versions(pac_id, with_content=True)
+
+        extra = self._make_room(pac_id, versions)
 
         created = _unwrap(
             self.pac.clone_pac_file(
@@ -177,27 +263,96 @@ class ZiaDeployer:
                 pac_content=content,
                 pac_version_status="STAGE",
                 pac_commit_message=message[:255],
+                **extra,
             ),
             "clone_pac_file",
         )
+        self._cache.pop(pac_id, None)
         version = getattr(created, "pac_version", None)
         if version is None:  # response did not echo the version: take the newest
             version = max(int(v.pac_version) for v in self.versions(pac_id))
         log.info("Staged PAC %s version %s", pac_id, version)
         return int(version)
 
+    def _make_room(self, pac_id: int, versions: List) -> dict:
+        """At the 10-version cap: choose the version to delete (never DEPLOYED, LKG or STAGE), report it, and return the
+        clone kwargs that name it. The SDK alone would delete the LOWEST version whatever its status."""
+        if len(versions) < MAX_VERSIONS:
+            return {}
+        evictable = [v for v in versions if v.pac_version_status not in PROTECTED]
+        if not evictable:
+            raise DeployError(f"PAC {pac_id} has {len(versions)} versions and none can be deleted (DEPLOYED, LKG "
+                              "and STAGE are protected): remove the LKG mark or delete versions in the portal")
+        gone = min(evictable, key=lambda v: int(v.pac_version))
+        log.warning('evicting v%s (%s, "%s") from PAC %s', gone.pac_version, gone.pac_version_status,
+                    gone.pac_commit_message, pac_id)
+        if self.on_evict:
+            self.on_evict(gone)
+        return {"delete_version": int(gone.pac_version)}
+
     def deploy(self, pac_id: int, version: int) -> None:
         """Promote an existing version (staged, or an older one for rollback) to DEPLOYED."""
         if self.dry_run:
             log.info("[dry-run] would deploy PAC %s version %s", pac_id, version)
             return
+        self.assert_writable(pac_id)
         target = next((v for v in self.versions(pac_id, with_content=True) if int(v.pac_version) == version), None)
         if target is None:
             raise DeployError(f"PAC {pac_id} has no version {version} (ZIA keeps only the last 10)")
         self._action(pac_id, target, "DEPLOY")
         log.info("Deployed PAC %s version %s", pac_id, version)
 
-    def _action(self, pac_id: int, version_obj, action: str) -> None:
+    def set_lkg(self, pac_id: int, version: int) -> None:
+        self.assert_writable(pac_id)
+        target = next((v for v in self.versions(pac_id, with_content=True) if int(v.pac_version) == version), None)
+        if target is None:
+            raise DeployError(f"PAC {pac_id} has no version {version}")
+        self._action(pac_id, target, "LKG")
+
+    def remove_lkg(self, pac_id: int, new_lkg: Optional[int] = None) -> None:
+        self.assert_writable(pac_id)
+        current = self._by_status(self.versions(pac_id, with_content=True), "LKG")
+        if current is None:
+            raise DeployError(f"PAC {pac_id} has no LKG version")
+        self._action(pac_id, current, "REMOVE_LKG", new_lkg=new_lkg)
+
+    def delete_pac(self, pac_id: int, name: Optional[str] = None) -> None:
+        self.assert_writable(pac_id, name=name)
+        _unwrap(self.pac.delete_pac_file(pac_id), "delete_pac_file")
+        self._cache.pop(pac_id, None)
+
+    def probe_write(self, pac_id: int, message: str) -> List[Tuple[str, str]]:
+        """Clone the deployed version as STAGE, then UNSTAGE it. Return [(step, "ok" | error)]. Does not activate (the
+        caller does, and only when nothing else was pending). At the cap it deletes the same safe version stage() would."""
+        self.assert_writable(pac_id)
+        steps: List[Tuple[str, str]] = []
+        try:
+            current = self.versions(pac_id, with_content=True)
+            deployed = self._by_status(current, "DEPLOYED")
+            if deployed is None:
+                return [("read", "no DEPLOYED version")]
+            if self._by_status(current, "STAGE") is not None:
+                return [("precheck", "a STAGE version already exists: promote or unstage it first")]
+            extra = self._make_room(pac_id, current)
+            created = _unwrap(self.pac.clone_pac_file(
+                pac_id=pac_id, pac_version=str(deployed.pac_version), pac_content=deployed.pac_content,
+                pac_version_status="STAGE", pac_commit_message=message[:255], **extra), "clone_pac_file")
+        except Exception as exc:
+            return steps + [("clone", str(exc))]
+        self._cache.pop(pac_id, None)
+        steps.append(("clone", "ok"))
+        try:
+            number = getattr(created, "pac_version", None) or self._by_status(
+                self.versions(pac_id, with_content=True), "STAGE").pac_version
+            probe = next(v for v in self.versions(pac_id, with_content=True) if int(v.pac_version) == int(number))
+            self._action(pac_id, probe, "UNSTAGE")
+            steps.append(("unstage", "ok"))
+        except Exception as exc:
+            steps.append(("unstage", str(exc)))
+        return steps
+
+    def _action(self, pac_id: int, version_obj, action: str, new_lkg: Optional[int] = None) -> None:
+        self.assert_writable(pac_id)
         # The action endpoint takes the version's own fields in the body (see update_pac_file docstring).
         body = {
             "name": version_obj.name,
@@ -207,15 +362,18 @@ class ZiaDeployer:
             "pac_verification_status": "VERIFY_NOERR",
             "pac_content": getattr(version_obj, "pac_content", None),
         }
+        extra = {"new_lkg_ver": int(new_lkg)} if new_lkg is not None else {}
         _unwrap(
             self.pac.update_pac_file(
                 pac_id=pac_id,
                 pac_version=int(version_obj.pac_version),
                 pac_version_action=action,
+                **extra,
                 **{k: v for k, v in body.items() if v is not None},
             ),
             f"update_pac_file {action}",
         )
+        self._cache.pop(pac_id, None)
 
     def activate(self) -> None:
         if self.dry_run:

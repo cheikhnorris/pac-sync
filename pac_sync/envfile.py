@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Tuple
 
@@ -19,24 +20,22 @@ class ConfigError(ValueError):
     """Invalid or incomplete configuration (missing env var, unknown option). The message never holds a secret."""
 
 
+_DQ = re.compile(r'^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$')
+_SQ = re.compile(r"^'([^']*)'\s*(?:#.*)?$")
+_ESC = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"'}
+
+
 def _unquote(raw: str) -> str:
+    r"""Quoted values may be followed by ` # comment`. In double quotes only \\ \" \n \r \t are escapes, so
+    C:\keys\private.pem survives (\n and \t ARE escapes: put such paths in single quotes)."""
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
-        out, i, body = [], 0, raw[1:-1]
-        while i < len(body):
-            ch = body[i]
-            if ch == "\\" and i + 1 < len(body):
-                nxt = body[i + 1]
-                out.append({"n": "\n", "r": "\r", "t": "\t"}.get(nxt, nxt))
-                i += 2
-                continue
-            out.append(ch)
-            i += 1
-        return "".join(out)
-    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
-        return raw[1:-1]
-    # Unquoted: an inline comment starts at " #".
-    hit = re.search(r"\s#", raw)
+    m = _DQ.match(raw)
+    if m:
+        return re.sub(r'\\([\\"nrt])', lambda e: _ESC[e.group(1)], m.group(1))
+    m = _SQ.match(raw)
+    if m:
+        return m.group(1)
+    hit = re.search(r"\s#", raw)  # unquoted: an inline comment starts at " #"
     return (raw[: hit.start()] if hit else raw).strip()
 
 
@@ -121,3 +120,30 @@ def describe_env(name: str) -> str:
     """'set (N chars)' or 'not set': safe to print, never shows the value."""
     value = os.environ.get(name, "")
     return f"set ({len(value)} chars)" if value else "not set"
+
+
+def default_env_file(config_path: str) -> str:
+    """The `.env` of the project that owns ``config_path``: <config folder>/.. first, then the current directory.
+    Returns the project-root path when neither exists (where `setup` should create it)."""
+    root = Path(config_path).resolve().parent.parent / ".env"
+    if root.is_file():
+        return str(root)
+    cwd = Path(".env")
+    return str(cwd) if cwd.is_file() else str(root)
+
+
+def stdin_is_interactive() -> bool:
+    """True only for a real console: not a pipe, not a file, not Windows NUL (which reports isatty() == True)."""
+    stream = sys.stdin
+    if stream is None or not stream.isatty():
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            import msvcrt
+
+            mode = ctypes.c_uint32()
+            return bool(ctypes.windll.kernel32.GetConsoleMode(msvcrt.get_osfhandle(stream.fileno()), ctypes.byref(mode)))
+        except Exception:  # cannot tell (e.g. a test double): trust isatty()
+            return True
+    return True

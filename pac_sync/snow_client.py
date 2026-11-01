@@ -17,7 +17,7 @@ REGION_FIELDS = "sys_id,u_code,u_zia_pac_name,u_default_profile,u_active"
 PROFILE_FIELDS = "sys_id,u_name,u_proxy_chain,u_active"
 RULE_FIELDS = (
     "sys_id,number,u_action,u_match_type,u_value,u_proxy_profile,u_scope,u_regions,u_priority,"
-    "u_state,u_valid_from,u_valid_to,u_change_request,u_deploy_status,u_deploy_version,sys_updated_on"
+    "u_state,u_valid_from,u_valid_to,u_change_request,u_deploy_status,u_deploy_version,u_deploy_message,sys_updated_on"
 )
 RULE_QUERY = "u_stateINapproved,deployed,retire_requested^ORDERBYu_priority^ORDERBYnumber"
 

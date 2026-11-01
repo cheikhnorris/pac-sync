@@ -17,6 +17,9 @@ from .models import ACTIONS, ACTIVE_STATES, MATCH_TYPES, RETIRE_STATE, PacRule, 
 _LABEL = r"(?!-)[a-z0-9-]{1,63}(?<!-)"
 HOST_RE = re.compile(rf"^(?=.{{1,253}}$){_LABEL}(\.{_LABEL})*$")
 URL_RE = re.compile(r"^https?://[a-z0-9.*\-]+(:\d{1,5})?(/[^\s\"';\\]*)?$")
+# The rule number is written into the PAC as a `// <number> <ACTION>` comment and read back by history mode zia, so it
+# must not be able to end the comment (a newline would inject code). Same check in snow-mock/src/validation.php.
+NUMBER_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
 FORBIDDEN_CHARS = set("\"';\\\r\n\t ")
 # Suffixes that must never be sent DIRECT or PROXY as a whole (V3). Extend as needed.
 PUBLIC_SUFFIXES = {
@@ -146,6 +149,8 @@ def normalize(
 def _build_rule(
     rec: dict, regions: Dict[str, Region], profiles: Dict[str, ProxyProfile]
 ) -> Tuple[Optional[PacRule], Optional[str]]:
+    if not NUMBER_RE.fullmatch(rec.get("number") or ""):
+        return None, "invalid rule number (letters, digits, _ and - only, 1 to 40 characters)"
     action = (rec.get("u_action") or "").strip().lower()
     match_type = (rec.get("u_match_type") or "").strip().lower()
     value = (rec.get("u_value") or "").strip().lower()

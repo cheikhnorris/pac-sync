@@ -10,11 +10,14 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .deployer import PacFileNotFound, ZiaDeployer, close_zscaler_client, make_zscaler_client, zscaler_target
+from .deployer import (PROTECTED, PacFileNotFound, close_zscaler_client, effective_pac_name, make_zscaler_client,
+                       zscaler_target)
 from .envfile import describe_env
 from .history import redact
 
@@ -29,6 +32,7 @@ class Context:
     cfg: Optional[dict] = None
     source_data: Optional[tuple] = None  # (regions, profiles, raw_rules) once ServiceNow answered
     modes: Dict[str, str] = field(default_factory=dict)
+    region: Optional[str] = None  # for --write-probe
 
 
 def _git(args: List[str], cwd: Optional[str] = None, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -182,8 +186,37 @@ def check_servicenow(ctx: Context) -> List[Check]:
     return checks
 
 
+def check_names(ctx: Context) -> List[Check]:
+    """Effective PAC names (prefix + u_zia_pac_name) and the state of the prefix guard."""
+    z = ctx.cfg.get("zscaler") or {}
+    if ctx.source_data is None or zscaler_target(z) == "simulated" and not z.get("pac_name_prefix"):
+        return []
+    prefix = z.get("pac_name_prefix") or ""
+    guard = "ON, writes only touch prefixed files" if z.get("only_prefixed") and prefix else \
+        ("OFF (zscaler.only_prefixed is not set)" if prefix else "no prefix")
+    names = ", ".join(f"{r.code} -> {effective_pac_name(z, r.zia_pac_name)}"
+                      for r in sorted(ctx.source_data[0].values(), key=lambda r: r.code))
+    return [(OK, "pac names", f"prefix '{prefix}', guard {guard}: {names}")]
+
+
 def check_history(ctx: Context) -> List[Check]:
+    from .main import history_mode
+
     hcfg = ctx.cfg.get("history") or {}
+    mode = history_mode(ctx.cfg)
+    if mode == "zia":
+        state = Path(hcfg.get("state_file") or "./pac-state.json")
+        checks: List[Check] = [(OK, "history mode", "zia: the ZIA PAC versions are the history, no git")]
+        try:
+            state.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=state.parent):
+                pass
+            checks.append((OK, "history state_file", f"{state} (folder writable)"))
+        except OSError as exc:
+            checks.append((FAIL, "history state_file", f"{state}: {exc}"))
+        archive = hcfg.get("archive_dir")
+        checks.append((OK, "history archive_dir", str(archive) if archive else "not set: versions ZIA deletes are only logged"))
+        return checks
     repo = Path(hcfg.get("repo_path", ""))
     try:
         ver = _git(["--version"])
@@ -191,7 +224,9 @@ def check_history(ctx: Context) -> List[Check]:
             raise OSError(ver.stderr)
     except (OSError, subprocess.SubprocessError):
         return [(FAIL, "git", "not found: install Git (winget install Git.Git)")]
-    checks: List[Check] = [(OK, "git", ver.stdout.strip())]
+    checks = [(OK, "git", ver.stdout.strip())]
+    if mode == "both":
+        checks.append((OK, "history mode", "both: git, plus zia-archive/ for every version ZIA deletes"))
     if not (repo / ".git").exists():
         if repo.exists() and any(repo.iterdir()):
             return checks + [(FAIL, "history repo", f"{repo} exists but is not a git repository")]
@@ -225,20 +260,25 @@ def check_history(ctx: Context) -> List[Check]:
 
 
 def check_zia(ctx: Context) -> List[Check]:
-    from .main import auto_bootstrap_refusal, bootstrap_mode, make_history, make_renderer, region_mode
+    from .main import (auto_bootstrap_refusal, bootstrap_mode, drift_reason, history_mode, make_deployer, make_history,
+                       make_renderer, region_mode, skip_activate_if_pending)
     from .normalizer import normalize
 
     cfg = ctx.cfg
     if not _zia_needed(ctx):
         return [(OK, "zia", "not used: every region is paused")]
     zcfg = cfg.get("zscaler") or {}
+    checks: List[Check] = []
+    if (zcfg.get("auth") or "oneapi") == "legacy" and zscaler_target(zcfg) == "live" and skip_activate_if_pending(cfg):
+        checks.append((WARN, "zia legacy", "auth: legacy and skip_activate_if_pending: closing a legacy session activates "
+                                           "pending changes anyway (SDK README, context manager): use OneAPI for the demo"))
     try:
         client = make_zscaler_client(zcfg)
     except Exception as exc:  # ConfigError for a missing variable, ValueError from the SDK constructor
-        return [(FAIL, "zia client", str(exc))]
-    checks: List[Check] = [(OK, "zia client", type(client).__name__)]
+        return checks + [(FAIL, "zia client", str(exc))]
+    checks.append((OK, "zia client", type(client).__name__))
     try:
-        deployer = ZiaDeployer(client)
+        deployer = make_deployer(cfg, client)
         try:
             value, _resp, error = deployer.pac.list_pac_files(query_params={"filter": "pac_content"})
             if error:
@@ -251,7 +291,14 @@ def check_zia(ctx: Context) -> List[Check]:
             value, _resp, error = client.zia.activate.status()
             if error:
                 raise RuntimeError(error)
-            checks.append((OK, "zia activation status", str(getattr(value, "status", value))))
+            state = str(getattr(value, "status", value))
+            if state.upper() == "ACTIVE":
+                checks.append((OK, "zia activation status", state))
+            else:
+                checks.append((WARN, "zia activation status",
+                               f"{state}: pending changes exist" + (" (skip_activate_if_pending: PAC Sync will not activate)"
+                                                                    if skip_activate_if_pending(cfg) else
+                                                                    ": a PAC Sync activation would publish them too")))
         except Exception as exc:
             checks.append((FAIL, "zia activation status", str(exc)))
 
@@ -260,32 +307,38 @@ def check_zia(ctx: Context) -> List[Check]:
         regions, profiles, raw_rules = ctx.source_data
         result = normalize(raw_rules, regions, profiles)
         renderer = make_renderer(cfg)
-        history = make_history(cfg, push=False)
+        zia_mode = history_mode(cfg) == "zia"
+        names = {r.code: effective_pac_name(zcfg, r.zia_pac_name) for r in regions.values()}
+        history = make_history(cfg, push=False, deployer=deployer, name_for=lambda code: names[code])
         refusal = auto_bootstrap_refusal(cfg)
         for region in sorted(regions.values(), key=lambda r: r.code):
             label = f"zia {region.code}"
+            name = effective_pac_name(zcfg, region.zia_pac_name)
             if region_mode(cfg, region.code) == "paused":
                 checks.append((OK, label, "paused: not checked"))
                 continue
             try:
-                pac_id = deployer.find_pac_id(region.zia_pac_name)
+                pac_id = deployer.find_pac_id(name)
                 version = deployer.deployed_version(pac_id)
                 if version is None:
-                    checks.append((FAIL, label, f"PAC file '{region.zia_pac_name}' (id {pac_id}) has no DEPLOYED version"))
+                    checks.append((FAIL, label, f"PAC file '{name}' (id {pac_id}) has no DEPLOYED version"))
                 else:
-                    recorded = history.read_state(region.code).get("pac_id")
+                    recorded_state = history.read_state(region.code)
+                    recorded = None if zia_mode else recorded_state.get("pac_id")
                     if recorded and int(recorded) != int(pac_id):
-                        checks.append((WARN, label, f"'{region.zia_pac_name}' is id {pac_id} in ZIA but state.json "
+                        checks.append((WARN, label, f"'{name}' is id {pac_id} in ZIA but state.json "
                                                     f"records {recorded}: fix regions/{region.code}/state.json"))
                     else:
-                        checks.append((OK, label, f"'{region.zia_pac_name}' id {pac_id}, deployed v{version}"))
+                        checks.append((OK, label, f"'{name}' id {pac_id}, deployed v{version}"))
+                    checks += _headroom_and_drift(deployer, recorded_state, region.code, pac_id, zia_mode, drift_reason)
             except PacFileNotFound:
-                if refusal is None:
-                    checks.append((WARN, label, f"no PAC file '{region.zia_pac_name}' yet: the next run creates it "
+                if refusal is None and region_mode(cfg, region.code) == "auto":
+                    checks.append((WARN, label, f"no PAC file '{name}' yet: the next run creates it "
                                                 f"(zscaler.bootstrap: {bootstrap_mode(cfg)})"))
                 else:
-                    checks.append((FAIL, label, f"region {region.code}: no ZIA PAC file named '{region.zia_pac_name}'. "
-                                                f"Run `pac-sync bootstrap --region {region.code}` ({refusal})"))
+                    checks.append((FAIL, label, f"region {region.code}: no ZIA PAC file named '{name}'. "
+                                                f"Run `pac-sync bootstrap --region {region.code}`"
+                                                + (f" ({refusal})" if refusal else " (a run only bootstraps auto regions)")))
             except Exception as exc:
                 checks.append((FAIL, label, f"region {region.code}: {exc}"))
             try:
@@ -304,8 +357,79 @@ def check_zia(ctx: Context) -> List[Check]:
     return checks
 
 
-def run_doctor(config_path: str, env_file: str = ".env", out: Callable[[str], None] = print) -> int:
-    ctx = Context(config_path=config_path, env_file=env_file)
+def _headroom_and_drift(deployer, recorded_state, code, pac_id, zia_mode, drift_reason) -> List[Check]:
+    """WARN when the next stage cannot make room (>= 9 versions, none deletable) or someone changed ZIA by hand.
+    ``recorded_state`` is the region's history state: a version accepted with `resume` (drift_accepted) is not drift."""
+    out: List[Check] = []
+    versions = deployer.versions(pac_id)
+    free = [v for v in versions if v.pac_version_status not in PROTECTED]
+    if len(versions) >= 9 and not free:
+        out.append((WARN, f"zia headroom {code}", f"{len(versions)} versions, none deletable (DEPLOYED/LKG/STAGE are "
+                                                  "protected): remove the LKG mark or delete versions in the portal"))
+    reason = drift_reason(deployer, dict(recorded_state, pac_id=pac_id), zia_mode)
+    if reason:
+        out.append((WARN, f"zia drift {code}", f"{reason}: the next run pauses this region until `resume` or `run --force`"))
+    return out
+
+
+def check_probe(ctx: Context) -> List[Check]:
+    """`doctor --write-probe --region X`: clone the deployed version as STAGE, then UNSTAGE it, then activate.
+
+    Prefixed names only. It runs only when activate.status() is ACTIVE beforehand, so the activation afterwards publishes
+    nothing but the probe (an unactivated probe would leave ZIA PENDING and block skip_activate_if_pending later). At the
+    10-version cap it deletes the same safe version a stage would (WARN, archive)."""
+    from .main import build_message, evict_hook, make_deployer, make_history, run_id
+
+    cfg, zcfg = ctx.cfg, ctx.cfg.get("zscaler") or {}
+    region = next((r for r in (ctx.source_data[0].values() if ctx.source_data else []) if r.code == ctx.region), None)
+    if region is None:
+        return [(FAIL, "write probe", f"unknown or inactive region {ctx.region}")]
+    name = effective_pac_name(zcfg, region.zia_pac_name)
+    prefix = zcfg.get("pac_name_prefix") or ""
+    if not prefix or not name.startswith(prefix):
+        return [(FAIL, "write probe", f"refused: '{name}' has no zscaler.pac_name_prefix; the probe only writes to prefixed files")]
+    try:
+        client = make_zscaler_client(zcfg)
+    except Exception as exc:
+        return [(FAIL, "write probe", str(exc))]
+    try:
+        deployer = make_deployer(cfg, client)
+        try:
+            pac_id = deployer.find_pac_id(name)
+        except PacFileNotFound:
+            return [(FAIL, "write probe", f"'{name}' does not exist yet: run `pac-sync bootstrap --region {region.code}` first")]
+        if deployer.activation_pending():
+            return [(FAIL, "write probe", "refused: ZIA is not ACTIVE (pending changes exist, maybe another admin's). The probe "
+                                          "activates when it is done, which would publish them: activate or coordinate in "
+                                          "the ZIA portal first")]
+        names = {name: region.code}
+        history = make_history(cfg, push=False, deployer=deployer, name_for=lambda code: name)
+        deployer.on_evict = evict_hook(cfg, history, names)
+        message = build_message(run_id(datetime.now(timezone.utc)), region.code, kind="probe")
+        steps = deployer.probe_write(pac_id, message)
+        left = [v for v in deployer.versions(pac_id) if v.pac_version_status == "STAGE"]
+        checks = [(OK if res == "ok" else FAIL, f"write probe {step}", res if res != "ok" else f"{name}: ok")
+                  for step, res in steps]
+        if left:
+            checks.append((FAIL, "write probe cleanup", f"a STAGE version is left on '{name}': unstage it in the portal "
+                                                        "(nothing was activated)"))
+        elif all(res == "ok" for _, res in steps):
+            try:
+                deployer.activate()
+                checks.append((OK, "write probe", "no STAGE left; activated (nothing else was pending)"))
+            except Exception as exc:
+                checks.append((FAIL, "write probe activate", f"the probe's changes are saved in ZIA but NOT activated: {exc}. "
+                                                             "Activate in the ZIA portal before running PAC Sync"))
+        return checks
+    except Exception as exc:
+        return [(FAIL, "write probe", str(exc))]
+    finally:
+        close_zscaler_client(client)
+
+
+def run_doctor(config_path: str, env_file: str = ".env", out: Callable[[str], None] = print,
+               write_probe: bool = False, region: Optional[str] = None) -> int:
+    ctx = Context(config_path=config_path, env_file=env_file, region=region)
     results: List[Check] = []
 
     def emit(checks: List[Check]) -> None:
@@ -316,11 +440,15 @@ def run_doctor(config_path: str, env_file: str = ".env", out: Callable[[str], No
     emit(check_config(ctx))
     emit(check_python(ctx))
     if ctx.cfg is not None:
-        for check in (check_env, check_env_file, check_servicenow, check_history, check_zia):
+        checks = [check_env, check_env_file, check_servicenow, check_names, check_history, check_zia]
+        if write_probe:
+            checks.append(check_probe if region else
+                          (lambda c: [(FAIL, "write probe", "--write-probe needs --region X")]))
+        for check in checks:
             try:
                 emit(check(ctx))
             except Exception as exc:  # a broken check must not hide the others
-                emit([(FAIL, check.__name__.replace("check_", ""), f"unexpected error: {exc}")])
+                emit([(FAIL, getattr(check, "__name__", "check").replace("check_", ""), f"unexpected error: {exc}")])
     else:
         emit(check_env_file(ctx))
     counts = {s: sum(1 for r in results if r[0] == s) for s in (OK, WARN, FAIL)}

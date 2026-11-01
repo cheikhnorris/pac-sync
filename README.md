@@ -22,7 +22,10 @@ then opens the portal. No ExecutionPolicy change and no manual environment varia
 
 The mock profile (`config/config.mock.yaml`) is local only: ServiceNow mock, **simulated ZIA** (`zscaler.target:
 simulated`, state in `sim-zia\`), history in `pac-history-mock\`, nothing pushed. EMEA and APAC are `auto`, NA is
-`stage`. The first run creates the three PAC files in the simulator (`zscaler.bootstrap: missing`).
+`stage`. The first run creates the EMEA and APAC PAC files in the simulator (`zscaler.bootstrap: missing`; a run only creates
+auto-mode regions); the launcher creates NA's with `pac-sync bootstrap --region NA --yes` because the simulator touches nothing real.
+The simulator keeps `sim-zia\<name>\deployed.pac`; the folder is the PAC file name when it is a plain lower-case file name, otherwise
+the sanitized name plus a hash of the exact name, so two names never share a folder.
 
 Demo script:
 
@@ -86,6 +89,8 @@ and use `config/config.mock.yaml` (Table API over OAuth, simulated ZIA, local hi
 | `pac_sync/renderer.py` | Deterministic Jinja2 rendering + SHA-256 |
 | `pac_sync/history.py` | Git repository: content, rule snapshot, ZIA state, tags |
 | `pac_sync/deployer.py` | ZIA client factory (simulated / OneAPI / legacy), `pac_files` stage / deploy / rollback / bootstrap, `activate` |
+| `pac_sync/zia_history.py`, `zia_messages.py`, `zia_cli.py` | History mode `zia`, ZIA version commit messages, `versions` / `diff` / `lkg` / `demo-cleanup` |
+| `config/config.demo.yaml` | Mock ServiceNow + real ZIA with prefixed PAC files (see Demo on a real tenant) |
 | `pac_sync/simzia.py` | Simulated ZIA tenant (`zscaler.target: simulated`), state in `sim-zia/` |
 | `pac_sync/envfile.py` | `.env` loading and writing, required environment variables |
 | `pac_sync/doctor.py` | `pac-sync doctor` read-only checks |
@@ -108,9 +113,12 @@ pytest
 
 Or `pac-sync setup` (interactive) to write `config/config.yaml` and `.env`.
 
-Environment variables (names configurable in `config.yaml`). They can live in a `.env` file next to the config
-(git-ignored, `KEY=value` lines, loaded before the config, `--env-file` to choose another file); a variable already
-set in the process environment always wins over `.env`.
+Environment variables (names configurable in `config.yaml`). They can live in a `.env` file in the project root, i.e.
+the parent of the config file's folder (`config/config.yaml` -> `./.env`; the current directory's `.env` is the fallback
+when there is none there). It is git-ignored, has `KEY=value` lines, is loaded before the config, and `--env-file`
+chooses another file. A variable already set in the process environment always wins over `.env`. Quote values with
+spaces or `#`; inside double quotes only `\\ \" \n \r \t` are escapes, so put a Windows path such as
+`C:\keys\new.pem` in single quotes.
 
 | Variable | Purpose |
 | --- | --- |
@@ -133,16 +141,25 @@ pac-sync run                        # the scheduled job
 pac-sync render --region EMEA       # print a region's PAC to stdout
 pac-sync promote --region NA        # deploy the STAGE version you reviewed (refused if the render changed since)
 pac-sync rollback --region EMEA --version 41   # redeploy an older ZIA version and pause the region
-pac-sync resume --region EMEA       # clear the pause once ServiceNow is fixed
-pac-sync status                     # each region's recorded ZIA state (offline)
-pac-sync bootstrap --region EMEA    # create the region's PAC file in ZIA (asks on a live tenant; --yes to skip)
+pac-sync rollback --region EMEA --to lkg       # redeploy the last known good version (--version and --to are exclusive)
+pac-sync resume --region EMEA       # clear a pause (rollback, "manual change in ZIA") and accept the current ZIA version
+pac-sync status                     # each region's recorded ZIA state (offline in git modes)
+pac-sync versions --region EMEA     # every ZIA version: status, times, modified by, PAC Sync or manual, +/- PACR, message
+pac-sync diff --region EMEA --from deployed --to render    # N | deployed | staged | lkg  ->  N | deployed | staged | lkg | render
+pac-sync lkg --region EMEA --version 41                     # mark a version last known good
+pac-sync lkg --region EMEA --remove [--new-lkg 40]          # unmark it (optionally name the next one)
+pac-sync bootstrap --region EMEA    # create the region's PAC file in ZIA (asks on a live tenant, never without a console; --yes to skip)
+pac-sync demo-cleanup --yes         # delete the PAC files that start with zscaler.pac_name_prefix (needs only_prefixed: true)
 pac-sync doctor                     # read-only checks, exit 1 if any FAIL
-pac-sync setup [--profile mock|custom] [--non-interactive] [--force]
+pac-sync doctor --write-probe --region EMEA   # also stage + unstage one PREFIXED PAC file, then activate (only if ZIA is ACTIVE first)
+pac-sync setup [--profile mock|demo|custom] [--non-interactive] [--force]
 ```
+
+`run --force` also overrides a "manual change in ZIA" pause (see Versioning).
 
 Exit codes: `0` ok, `1` at least one region failed or was blocked, or the git push failed (ZIA state and
 ServiceNow write-back are still done; the commits go out with the next successful push), `2` aborted by a
-guardrail, `3` unexpected error.
+guardrail, `3` unexpected error. A run that saved versions in ZIA but did not activate them (activation guard) also exits `1`.
 
 ## Deploy modes: staged first, automatic once stable
 
@@ -193,6 +210,107 @@ regions/EMEA/state.json    pac_id, staged {version, hash, commit}, deployed {ver
 - **Windows Task Scheduler:** action `C:\pac-sync\.venv\Scripts\pac-sync.exe`, arguments `run`, start in `C:\pac-sync`, repeat every 15 minutes.
 - **Kubernetes:** a `CronJob` with `concurrencyPolicy: Forbid`, the history repo cloned from its remote at start, `history.push: true`.
 
+## Demo on a real tenant
+
+`config/config.demo.yaml` drives a REAL ZIA tenant from the mock ServiceNow without touching production PAC files:
+every PAC file is named `demo-<u_zia_pac_name>` (`zscaler.pac_name_prefix`), `zscaler.only_prefixed: true` refuses any
+write to another file before a request is sent, `deploy.skip_activate_if_pending: true` never activates other admins'
+pending changes, and `history.mode: zia` needs no git. EMEA and APAC are `auto`, NA is `stage` (to show `promote`).
+
+**Checklist before the demo**
+
+1. Auth mode: OneAPI (recommended). Legacy works, but closing a legacy session activates pending changes, which defeats
+   the activation guard (doctor warns).
+2. A ZIA admin role with full access to Hosted PAC Files plus activation, and nothing else (the exact permission names are
+   unverified; check them in your tenant). OneAPI: a ZIdentity API client with that role: client id, client secret (or a
+   private key), the vanity domain, the cloud if not production. Legacy: API key, cloud, admin user and password.
+3. The PAC domain ZIA wants when it creates a PAC file (`zscaler.pac_domain`).
+4. A prefix that no existing PAC file or ZCC forwarding profile uses (default `demo-`).
+5. ZIA admin portal: no pending changes (the banner shows them). Otherwise the demo still runs, but saves versions
+   without activating them and exits 1.
+6. Version headroom: a new PAC file starts at 1 version; ZIA keeps 10 per file.
+
+**On the laptop**
+
+```powershell
+.\start-poc.cmd -Profile demo      # first time: asks for the credentials (hidden), writes config\config.yaml + .env
+.venv\Scripts\pac-sync doctor --write-probe --region EMEA    # optional: proves the write permissions on a prefixed file
+.venv\Scripts\pac-sync bootstrap --region NA --yes           # stage-mode regions are never created by a run
+.venv\Scripts\pac-sync run
+```
+
+The write probe clones the deployed version as STAGE, unstages it and then ACTIVATES, so it runs only when ZIA is
+ACTIVE beforehand (otherwise it is refused: activate or coordinate in the portal first, because the activation would
+publish someone else's pending changes) and leaves ZIA ACTIVE afterwards; a probe that left ZIA PENDING would make
+`skip_activate_if_pending` skip the next run. It leaves one UNSTAGED version (it counts toward the 10) and, at the cap,
+deletes the same safe version a stage would. If the activation fails the probe says so and what to do.
+
+`start-poc.cmd -Profile demo` runs setup (when `config\config.yaml` is missing), then doctor, and prints the `bootstrap
+--region X --yes` commands for regions a run will not create; it never runs them on a live tenant. Use `-Config` for a
+separate file (`config\config.demo.local.yaml` is git-ignored).
+
+**Demo script**
+
+1. Mock portal: submit a rule as `jdoe`, approve as `mmanager` and `nsec` (and `cab` for global rules).
+2. `pac-sync run`: EMEA is staged, deployed and activated; the request closes; NA is staged and the rule says
+   "Staged as NA v2; waiting for promotion".
+3. ZIA admin portal, Hosted PAC Files (menu names may differ): open `demo-emea-proxy.pac` > versions: one new version whose
+   message reads `PAC Sync <run> EMEA +PACR... sha256:...`.
+4. `pac-sync versions --region EMEA`, `pac-sync diff --region EMEA --from 1 --to deployed`.
+5. `pac-sync promote --region NA`.
+6. `pac-sync rollback --region EMEA --to lkg`: the previous version is live again, the region is paused, the request
+   page and `/pacsync` (mock) show a "Rolled back" row. `pac-sync resume --region EMEA` ends the pause.
+7. Mock portal: the request page shows the ZIA version; `/pacsync` shows the latest deployed and staged version per region.
+
+**After the demo**: `pac-sync demo-cleanup --yes` (deletes only `demo-` files), delete `pac-state.json`, rotate or delete the
+ZIA API client secret, remove the `.env` values.
+
+## Versioning
+
+ZIA keeps at most 10 versions per PAC file, and each version carries a commit message. PAC Sync makes those messages
+the audit trail:
+
+```
+PAC Sync 20261101T101530Z EMEA +PACR0001017,PACR0001018 -PACR0001003 sha256:d7592d068bcc git:1f4797af91
+PAC Sync 20261101T101530Z NA bootstrap sha256:463234aa0cd1          (also: probe, rollback-to v41)
+```
+
+`<run id>` is the UTC start of the run, `+`/`-` are the rules added and removed (a long list becomes `+12 (PACR0001001...)`),
+`sha256` is the first 12 characters of the content hash, `git` the history commit (absent in mode `zia`). The message is
+at most 255 characters (assumed ZIA limit). `pac-sync versions` reads it back; a version without it was changed by a
+person in the portal.
+
+| `history.mode` | History of record | Needs |
+| --- | --- | --- |
+| `git` (default) | the git repository at `history.repo_path` | git |
+| `both` | git, plus `regions/<CODE>/zia-archive/v<N>.pac` + `.json` for every version ZIA is about to delete | git |
+| `zia` | the ZIA versions; state (`deployed`, `staged`, `pac_id`) is derived from them; pauses and errors in `history.state_file` (git-ignored, `pac-state.json` in the project, i.e. relative to the config folder's parent, with the run lock beside it) | nothing; `history.archive_dir` optionally keeps deleted versions |
+
+In mode `zia` the removed-rules guardrail reads the PACR numbers back from the `// <number> <ACTION>` comments of the
+deployed PAC, and `run --dry-run` prints a unified diff of deployed vs the new render. The run lock sits next to the state
+file.
+
+**The 10-version cap.** The SDK's `clone_pac_file` deletes the lowest version number at the cap, even a DEPLOYED one. PAC Sync
+passes an explicit `delete_version`: the lowest version that is not DEPLOYED, LKG or STAGE, logs `evicting v<N> (<status>,
+"<message>")` and archives it first (modes `both` and `zia` with `archive_dir`). When nothing can be deleted the region fails
+with "10 versions and none can be deleted: remove the LKG mark or delete versions in the portal". Doctor warns when a PAC file has 9 or more
+versions and none of them can be deleted (all DEPLOYED, LKG or STAGE).
+
+**Manual changes.** If the DEPLOYED version's message is not a PAC Sync message (or, in git modes, it is not the version
+`state.json` recorded), the region is paused with "manual change in ZIA" and the run exits 1. `pac-sync resume --region X`
+accepts the current version; `pac-sync run --force` overwrites it. The first run on a PAC file created by hand needs one
+of the two.
+
+**Not activated.** With `deploy.skip_activate_if_pending`, `activate.status()` is read before the first write. Anything but
+ACTIVE means someone else has pending changes: versions are saved, `activate()` is never called, the run exits 1 and
+the log, the notification, `u_pac_deployment.u_summary` and each rule's `u_deploy_message` say "saved in ZIA, not
+activated: other pending changes exist; review and activate in the portal". The rules of those regions stay `staged` with
+"saved in ZIA as EMEA v3, not activated: activate in the portal; the next run confirms" and keep their `u_state`, so the
+request stays open; they become `deployed` (and the request closes) on a later run that finds ZIA ACTIVE, which also logs a
+`u_pac_deployment` row "activation confirmed". Other regions' rules get no such note. A PAC file created that way is not cloned
+until ZIA is active again (the SDK documents a 400 otherwise). `deploy.mark_lkg_after_deploy: true` marks the previous version
+LKG after a successful deploy and activation.
+
 ## Verify before production
 
 `tests/test_deployer_sdk.py` runs `ZiaDeployer` through the real SDK (URL building, body serialization, response
@@ -205,3 +323,9 @@ The simulated target (`pac_sync/simzia.py`) copies the same assumptions. Check t
 4. Whether an `activate()` is needed between staging and deploying (the code does both).
 5. Whether `add_pac_file(..., pac_version_status="DEPLOYED")` (bootstrap) is accepted with the configured
    `zscaler.pac_domain`.
+6. Phase 1b assumptions (none verified against a tenant): `DEPLOY` demotes the previous version to LKG on its own; the
+   `deleteVersion` rules (only non-DEPLOYED, non-LKG, non-STAGE versions are accepted); the 255-character message limit;
+   that `pacContent` comes back unchanged apart from line endings and trailing whitespace (the mode `zia` hash depends on it);
+   the `lastModificationTime` format (epoch seconds or milliseconds are both handled); the `activate.status()` values (only
+   `ACTIVE` counts as clean) and whether it reflects other admins' changes; whether a PAC deploy needs an activation; rate
+   limits; the admin role permission names.

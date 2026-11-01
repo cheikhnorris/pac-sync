@@ -8,3 +8,9 @@ pac-history-mock/
 .env
 .env.tmp
 sim-zia/
+pac-state.json
+sim-zia-owner/
+pac-archive/
+config/*.local.yaml
+.pac-sync.lock
+.pac-state-*.json

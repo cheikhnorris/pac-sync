@@ -7,6 +7,8 @@ Layout:
 
 One commit per run that changes something; one tag per ZIA deployment: <CODE>-v<version>.
 PAC Sync commits, diffs and discards only under regions/: other files in the repository are left alone.
+With `history.mode: both`, every ZIA version PAC Sync is about to delete is first saved under
+regions/<CODE>/zia-archive/v<N>.pac + v<N>.json and committed with the next state commit.
 """
 
 from __future__ import annotations
@@ -20,6 +22,27 @@ from typing import List, Optional
 
 log = logging.getLogger(__name__)
 REGIONS = "regions"
+
+
+def write_archive(folder: Path, version) -> Path:
+    """Save a ZIA version (content + metadata) as v<N>.pac / v<N>.json in ``folder``. Used before it is deleted."""
+    from .deployer import to_epoch
+
+    folder.mkdir(parents=True, exist_ok=True)
+    number = int(version.pac_version)
+    (folder / f"v{number}.pac").write_text(getattr(version, "pac_content", None) or "", encoding="utf-8", newline="")
+    by = getattr(version, "last_modified_by", None)
+    meta = {
+        "name": getattr(version, "name", None),
+        "version": number,
+        "status": getattr(version, "pac_version_status", None),
+        "message": getattr(version, "pac_commit_message", None),
+        "created": to_epoch(getattr(version, "create_time", None)),
+        "modified": to_epoch(getattr(version, "last_modified_time", None)),
+        "modified_by": (by.get("name") if isinstance(by, dict) else getattr(by, "name", None)),
+    }
+    (folder / f"v{number}.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="")
+    return folder / f"v{number}.pac"
 
 
 def redact(text: str) -> str:
@@ -55,6 +78,23 @@ class GitHistory:
             encoding="utf-8",
         )
         self.commit("Initialize PAC history repository", everything=True)
+
+    def plan_hash(self, content: str, digest: str) -> str:
+        """Hash used to compare a render with the recorded state: the render's own sha256 in git."""
+        return digest
+
+    def codes(self) -> List[str]:
+        d = self.root / REGIONS
+        return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.is_dir() else []
+
+    def update_state(self, code: str, change) -> None:
+        st = self.read_state(code)
+        change(st)
+        self.write_state(code, st)
+
+    def archive_version(self, code: str, version) -> None:
+        """`history.mode: both`: keep a ZIA version that is about to be deleted."""
+        write_archive(self._dir(code) / "zia-archive", version)
 
     def _dir(self, code: str) -> Path:
         path = self.root / "regions" / code

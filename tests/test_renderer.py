@@ -33,3 +33,15 @@ def test_render_is_deterministic(sample, regions, profiles):
     assert r.render(na, res.rules_by_region["NA"]) == r.render(na, list(res.rules_by_region["NA"]))
     reversed_input = normalize(list(reversed(sample["u_pac_rule"])), regions, profiles, NOW)
     assert r.render(na, reversed_input.rules_by_region["NA"]) == r.render(na, res.rules_by_region["NA"])
+
+
+def test_rule_comment_is_a_contract_with_history_mode_zia(sample, regions, profiles):
+    """zia_history.parse_rules reads `// <number> <ACTION>` back from the deployed PAC (guardrail, +/- lists)."""
+    from pac_sync.zia_history import parse_rules
+
+    res = normalize(sample["u_pac_rule"], regions, profiles, NOW)
+    emea = next(r for r in regions.values() if r.code == "EMEA")
+    content, _ = _renderer().render(emea, res.rules_by_region["EMEA"])
+    assert "// PACR0001001 DIRECT" in content and "// PACR0001042 PROXY" in content
+    assert [r["number"] for r in parse_rules(content)] == [r.number for r in res.rules_by_region["EMEA"]]
+    assert [r["action"] for r in parse_rules(content)] == [r.action for r in res.rules_by_region["EMEA"]]

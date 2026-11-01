@@ -3,6 +3,8 @@
 Profiles:
     mock    local ServiceNow mock (snow-mock) + simulated ZIA, history in ./pac-history-mock, no push.
             Writes the mock's public demo OAuth client to .env (SNOW_CLIENT_ID / SNOW_CLIENT_SECRET).
+    demo    the same mock ServiceNow, but a REAL ZIA tenant, with every PAC file named with a prefix (config.demo.yaml):
+            asks for the ZIA credentials (OneAPI recommended), the PAC domain and the prefix; history mode zia (no git).
     custom  starts from config/config.example.yaml (real ServiceNow, live ZIA).
 
 Secrets are read with getpass and written only to the .env file (git-ignored); the config keeps env-var names.
@@ -21,7 +23,7 @@ import yaml
 
 from .envfile import load_env_file, parse_env_file, write_env_file
 
-PROFILES = {"mock": "config.mock.yaml", "custom": "config.example.yaml"}
+PROFILES = {"mock": "config.mock.yaml", "demo": "config.demo.yaml", "custom": "config.example.yaml"}
 MOCK_ENV = {"SNOW_CLIENT_ID": "pac-sync", "SNOW_CLIENT_SECRET": "pac-sync-secret"}  # public demo client of snow-mock
 ZIA_CHOICES = {
     "1": "simulated",
@@ -66,8 +68,9 @@ class Prompter:
         return self.ask_secret(f"{label} (input hidden, empty = keep current): ").strip()
 
 
-def _ask_zia(p: Prompter, z: dict, env: Dict[str, str], default_choice: str) -> None:
-    kind = ZIA_CHOICES[p.choice("ZIA target", ZIA_CHOICES, default_choice)]
+def _ask_zia(p: Prompter, z: dict, env: Dict[str, str], default_choice: str, live_only: bool = False) -> None:
+    choices = {k: v for k, v in ZIA_CHOICES.items() if not (live_only and v == "simulated")}
+    kind = ZIA_CHOICES[p.choice("ZIA target", choices, default_choice)]
     if kind == "simulated":
         z["target"] = "simulated"
         z.setdefault("simulated", {})["state_dir"] = p.text("Simulated ZIA state folder",
@@ -105,6 +108,10 @@ def _ask_zia(p: Prompter, z: dict, env: Dict[str, str], default_choice: str) -> 
             env[z.setdefault("vanity_domain_env", "ZSCALER_VANITY_DOMAIN")] = vanity
         z["cloud"] = p.text("Zscaler cloud (empty = production, e.g. beta)", z.get("cloud") or "")
     z["pac_domain"] = p.text("Domain for new PAC files (zscaler.pac_domain)", z.get("pac_domain") or "")
+    if live_only:
+        z["pac_name_prefix"] = p.text("Prefix of every PAC file this demo may touch (zscaler.pac_name_prefix)",
+                                      z.get("pac_name_prefix") or "demo-")
+        z["only_prefixed"] = bool(z["pac_name_prefix"])
 
 
 def _ask_servicenow(p: Prompter, s: dict, env: Dict[str, str]) -> None:
@@ -139,19 +146,21 @@ def run_setup(profile: Optional[str] = None, non_interactive: bool = False, forc
         out(f"{config_path} already exists: not overwritten (use --force to replace it).")
         return 2
     if profile is None:
-        profile = "mock" if non_interactive else p.choice("Profile", {"mock": "local demo", "custom": "real tenant"}, "mock")
+        profile = "mock" if non_interactive else p.choice(
+            "Profile", {"mock": "local demo", "demo": "mock ServiceNow + real ZIA with a prefix", "custom": "real tenant"}, "mock")
 
     cfg = yaml.safe_load(profile_path(profile).read_text(encoding="utf-8"))
-    env: Dict[str, str] = dict(MOCK_ENV) if profile == "mock" else {}
+    env: Dict[str, str] = dict(MOCK_ENV) if profile in ("mock", "demo") else {}
     if not non_interactive:
         if profile == "custom":
             _ask_servicenow(p, cfg["servicenow"], env)
-        _ask_zia(p, cfg.setdefault("zscaler", {}), env, "1" if profile == "mock" else "2")
+        _ask_zia(p, cfg.setdefault("zscaler", {}), env, "1" if profile == "mock" else "2", live_only=profile == "demo")
         h = cfg["history"]
-        h["repo_path"] = p.text("History repository folder", h.get("repo_path") or "./pac-history")
-        h["push"] = p.yes("Push the history to a git remote after each run?", bool(h.get("push")))
-        if h["push"]:
-            h["remote"] = p.text("Remote name", h.get("remote") or "origin")
+        if profile != "demo":  # the demo keeps its history in ZIA (mode zia): no repository to ask for
+            h["repo_path"] = p.text("History repository folder", h.get("repo_path") or "./pac-history")
+            h["push"] = p.yes("Push the history to a git remote after each run?", bool(h.get("push")))
+            if h["push"]:
+                h["remote"] = p.text("Remote name", h.get("remote") or "origin")
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     header = (f"# PAC Sync configuration written by `pac-sync setup` (profile {profile}, {stamp}).\n"

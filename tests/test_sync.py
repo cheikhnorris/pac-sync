@@ -134,6 +134,9 @@ def sim_cfg(tmp_path, monkeypatch):
     return data
 
 
+SEED_MESSAGE = "PAC Sync 20260101T000000Z seed sha256:000000000000"
+
+
 def _sim(cfg):
     return SimulatedZscalerClient(cfg["zscaler"]["simulated"]["state_dir"])
 
@@ -162,7 +165,7 @@ def _add_rule(cfg, tmp_path, value, regions="reg-emea"):
 def test_simulated_full_loop(sim_cfg, tmp_path):
     seed = ZiaDeployer(_sim(sim_cfg))
     for name in ("emea-proxy.pac", "na-proxy.pac"):
-        seed.bootstrap(name, 'function FindProxyForURL(url, host) { return "DIRECT"; }\n', "example.com", "portal")
+        seed.bootstrap(name, 'function FindProxyForURL(url, host) { return "DIRECT"; }\n', "example.com", SEED_MESSAGE)
     assert m.sync(sim_cfg) == 0
 
     repo = sim_cfg["history"]["repo_path"]
@@ -189,12 +192,16 @@ def test_bootstrap_missing_creates_pac(sim_cfg, tmp_path):
     assert "no ZIA PAC file named 'emea-proxy.pac'" in _state(repo, "EMEA")["last_error"]
 
     sim_cfg["zscaler"]["bootstrap"] = "missing"
+    assert m.sync(sim_cfg) == 1  # EMEA (auto) is created; NA (stage) is refused: its PAC would go live as DEPLOYED
+    st = _state(repo, "EMEA")
+    assert st["deployed"]["version"] == 1 and st["pac_id"] and st["last_error"] is None
+    assert (tmp_path / "sim" / "emea-proxy.pac" / "deployed.pac").read_bytes() == _read(f"{repo}/regions/EMEA/proxy.pac", "rb")
+    assert "pac-sync bootstrap --region NA" in _state(repo, "NA")["last_error"]
+    assert not (tmp_path / "sim" / "na-proxy.pac").exists() and not (tmp_path / "sim" / "apac-proxy.pac").exists()
+
+    assert m.bootstrap_region(sim_cfg, "NA", yes=True) == 0  # the explicit command creates it
     assert m.sync(sim_cfg) == 0
-    for code, name in (("EMEA", "emea-proxy.pac"), ("NA", "na-proxy.pac")):
-        st = _state(repo, code)
-        assert st["deployed"]["version"] == 1 and st["pac_id"] and st["last_error"] is None
-        assert (tmp_path / "sim" / name / "deployed.pac").read_bytes() == _read(f"{repo}/regions/{code}/proxy.pac", "rb")
-    assert not (tmp_path / "sim" / "apac-proxy.pac").exists()  # paused region is never bootstrapped
+    assert _state(repo, "NA")["deployed"]["version"] == 1
     assert {"EMEA-v1", "NA-v1"} <= set(_git(repo, "tag").split())
 
     # Nothing left to do on the next run.
@@ -230,6 +237,7 @@ def test_mock_profile_switched_to_live_uses_sdk_and_never_deploys(monkeypatch):
 
 def test_push_failure_still_writes_back(sim_cfg, monkeypatch):
     sim_cfg["zscaler"]["bootstrap"] = "missing"
+    sim_cfg["regions"]["NA"]["mode"] = "auto"
     sim_cfg["history"]["push"] = True
     messages = []
     monkeypatch.setattr(m, "notify", lambda cfg, text: messages.append(text))
@@ -246,6 +254,7 @@ def test_push_failure_still_writes_back(sim_cfg, monkeypatch):
 
 def test_dry_run_keeps_foreign_files(sim_cfg, tmp_path):
     sim_cfg["zscaler"]["bootstrap"] = "missing"
+    sim_cfg["regions"]["NA"]["mode"] = "auto"
     assert m.sync(sim_cfg) == 0
     repo = sim_cfg["history"]["repo_path"]
     head = _git(repo, "rev-parse", "HEAD")
@@ -300,6 +309,7 @@ def test_main_env_file_loaded_and_values_never_logged(sim_cfg, tmp_path, monkeyp
 
     secret = "Run-Secret-789"
     sim_cfg["zscaler"]["bootstrap"] = "missing"
+    sim_cfg["regions"]["NA"]["mode"] = "auto"
     sim_cfg.pop("_sources")
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(sim_cfg), encoding="utf-8")

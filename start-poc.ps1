@@ -6,6 +6,11 @@
   Usually started through start-poc.cmd (no ExecutionPolicy change needed). Each step prints one line and the
   script stops at the first failure with a remedy.
 
+  -Profile mock (default): the local demo, simulated ZIA. -Profile demo: the same mock ServiceNow against a REAL ZIA
+  tenant, every PAC file named with a prefix (config\config.demo.yaml); `pac-sync setup --profile demo` asks for the
+  ZIA credentials when config\config.yaml is missing, doctor must pass, regions whose PAC file does not exist and is
+  not created by a run get a printed `bootstrap --region X --yes` command (never run for you).
+
   Config: -Config (default config\config.yaml). When that file is missing it is created from the local mock profile
   (pac-sync setup --profile mock). To run the local-only demo whatever config\config.yaml says, use
   -Config config\config.mock.yaml (history in pac-history-mock, simulated ZIA, nothing pushed).
@@ -13,9 +18,11 @@
   .\start-poc.cmd
   .\start-poc.cmd -Config config\config.mock.yaml -NoBrowser
   .\start-poc.cmd -Reset        # fresh demo: mock database, sim-zia and pac-history-mock are deleted
+  .\start-poc.cmd -Profile demo # real ZIA tenant with prefixed PAC files
 #>
 param(
     [string]$Config = "config\config.yaml",
+    [ValidateSet("mock", "demo")][string]$Profile = "mock",
     [switch]$Reset,
     [switch]$NoBrowser,
     [switch]$SkipSync,
@@ -106,20 +113,26 @@ if ((Test-Path $stampFile) -and ((Get-Content $stampFile -Raw).Trim() -eq $stamp
 
 # 4. Config and credentials ------------------------------------------------------------------------------------
 if (-not (Test-Path $Config)) {
-    if ($PSBoundParameters.ContainsKey("Config")) { Fail "config $Config not found" "omit -Config to create config\config.yaml from the mock profile" }
-    Step "Creating $Config and .env from the mock profile"
-    $rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "setup", "--profile", "mock", "--non-interactive", "--no-doctor")
+    if ($PSBoundParameters.ContainsKey("Config")) { Fail "config $Config not found" "omit -Config to create config\config.yaml from the $Profile profile" }
+    if ($Profile -eq "demo") {
+        Step "Creating $Config and .env from the demo profile (answer the questions; secrets are typed hidden)"
+        $rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "setup", "--profile", "demo", "--no-doctor")
+    } else {
+        Step "Creating $Config and .env from the mock profile"
+        $rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "setup", "--profile", "mock", "--non-interactive", "--no-doctor")
+    }
     if ($rc -ne 0) { Fail "pac-sync setup failed" "see the message above" }
 } else {
     Step "Using config $Config"
 }
 $ErrorActionPreference = "Continue"
-$settings = & $venvPy -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1], encoding='utf-8')); print(c['servicenow'].get('instance_url', '')); print(c['history']['repo_path']); print(bool(c['history'].get('push')))" $Config 2>$null
+$settings = & $venvPy -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1], encoding='utf-8')); h = c['history']; z = c.get('zscaler') or {}; print(c['servicenow'].get('instance_url', '')); print(h.get('repo_path', '')); print(bool(h.get('push'))); print(h.get('mode') or 'git'); print(z.get('target') or 'live'); print((z.get('simulated') or {}).get('state_dir') or './sim-zia'); print(h.get('state_file') or './pac-state.json'); print(z.get('pac_name_prefix') or '')" $Config 2>$null
 $ErrorActionPreference = "Stop"
-if (-not $settings -or $settings.Count -lt 3) { Fail "cannot read $Config" "run .venv\Scripts\pac-sync --config $Config doctor for details" }
-$instanceUrl, $repoPath, $push = $settings[0], $settings[1], $settings[2]
+if (-not $settings -or $settings.Count -lt 8) { Fail "cannot read $Config" "run .venv\Scripts\pac-sync --config $Config doctor for details" }
+$instanceUrl, $repoPath, $push, $histMode, $zTarget, $simDir, $stateFile, $prefix = $settings[0], $settings[1], $settings[2], $settings[3], $settings[4], $settings[5], $settings[6], $settings[7]
 $usesMock = $instanceUrl -match '^https?://(127\.0\.0\.1|localhost)(:|/|$)'
-Info "ServiceNow $instanceUrl, history $repoPath, push $push"
+Info "ServiceNow $instanceUrl, ZIA $zTarget, history $histMode ($repoPath), push $push"
+if ($Profile -eq "demo" -and ($zTarget -ne "live" -or -not $prefix)) { Fail "$Config is not a demo config (needs zscaler.target: live and a zscaler.pac_name_prefix)" "create one: .venv\Scripts\pac-sync --config config\config.demo.local.yaml setup --profile demo, then start-poc -Profile demo -Config config\config.demo.local.yaml" }
 if ($usesMock -and -not (Test-Path ".env") -and -not $env:SNOW_CLIENT_ID) {
     Info "no .env: using the mock's public demo OAuth client for this session"
     $env:SNOW_CLIENT_ID = "pac-sync"
@@ -129,15 +142,54 @@ if ($usesMock -and -not (Test-Path ".env") -and -not $env:SNOW_CLIENT_ID) {
 # 5. Reset (optional) ------------------------------------------------------------------------------------------
 if ($Reset) {
     Step "Resetting demo data"
+    # ALLOWLIST: only things this script knows to be disposable demo data are deleted, and only after every one of them
+    # has been checked. Everything else is refused with a reason. pac-history is never in the list.
+    $root = (Resolve-Path $PSScriptRoot).Path
+    function Resolve-InProject([string]$Path) {
+        $full = [System.IO.Path]::GetFullPath((Join-Path $root $Path))
+        if (-not $full.StartsWith($root + "\", [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+        return $full
+    }
+    function Refuse([string]$Why) {
+        Fail "-Reset refused: $Why" "nothing was deleted. Reset only works for the local demo: -Config config\config.mock.yaml (history in pac-history-mock, simulated ZIA)"
+    }
+    $planned = @()
+    if ($histMode -eq "zia") {
+        $full = Resolve-InProject $stateFile
+        if (-not $full -or (Split-Path $full -Leaf) -notmatch '^pac-state[A-Za-z0-9._-]*\.json$') {
+            Refuse "history.state_file '$stateFile' is not a pac-state*.json file inside the project"
+        }
+        $planned += $full
+    } else {
+        $full = Resolve-InProject $repoPath
+        if (-not $full -or (Split-Path $full -Leaf) -ne "pac-history-mock") {
+            Refuse "history.repo_path '$repoPath' is not the folder pac-history-mock inside the project"
+        }
+        if ($push -ne "False") { Refuse "$Config has history.push: true (a history that is pushed is not disposable)" }
+        if (Test-Path -LiteralPath (Join-Path $full ".git")) {
+            $ErrorActionPreference = "Continue"
+            $remotes = @(& git -C $full remote 2>$null)
+            $ErrorActionPreference = "Stop"
+            if ($remotes.Count -gt 0) { Refuse "the repository $full has a git remote ($($remotes -join ', '))" }
+        }
+        $planned += $full
+    }
+    if ($zTarget -eq "simulated") {
+        $sim = Resolve-InProject $simDir
+        if (-not $sim -or (Split-Path $sim -Leaf) -notmatch '^sim-zia(-[a-z0-9]+)?$') {
+            Refuse "zscaler.simulated.state_dir '$simDir' is not a sim-zia folder inside the project"
+        }
+        $planned += $sim
+    } elseif ($histMode -ne "zia") {
+        Refuse "$Config uses a live ZIA tenant with a git history: state.json would keep PAC ids this reset cannot delete"
+    }
     $stop = Join-Path $MockPath "stop.ps1"
     if (Test-Path $stop) { & $stop }
     Get-ChildItem -Path (Join-Path $MockPath "data") -Filter "snow.sqlite*" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-DemoPath $_.FullName }
-    Remove-DemoPath (Join-Path $PSScriptRoot "sim-zia")
-    Remove-DemoPath (Join-Path $PSScriptRoot "pac-history-mock")
-    if ((Split-Path $repoPath -Leaf) -ne "pac-history-mock") {
-        Write-Warning ("$Config keeps its history in $repoPath, which -Reset does not touch. Its regions/*/state.json still " +
-            "record PAC file ids of the deleted sim-zia: use -Config config\config.mock.yaml for a clean demo.")
+    foreach ($full in $planned) { Remove-DemoPath $full }
+    if ($zTarget -eq "live") {
+        Write-Warning "The ZIA tenant keeps its PAC files ($prefix*). Remove them with: .venv\Scripts\pac-sync --config $Config demo-cleanup --yes"
     }
 }
 
@@ -162,9 +214,40 @@ if ($usesMock) {
 }
 
 # 7. Doctor, then the first run ----------------------------------------------------------------------------------
+function Invoke-Doctor {
+    $ErrorActionPreference = "Continue"
+    $out = & $venvPy -m pac_sync --config $Config doctor 2>&1 | ForEach-Object { "$_" }
+    $script:doctorRc = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    $out | Out-Host
+    return ,@($out)
+}
+function Get-MissingRegions($lines) {
+    # Regions whose PAC file is missing and is not created by a run (stage mode): doctor names the command.
+    return @($lines | Select-String -Pattern 'pac-sync bootstrap --region (\w+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+}
+
 Step "pac-sync doctor"
-$rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "doctor")
-if ($rc -ne 0) { Fail "doctor reported failures" "fix the [FAIL] lines above, then run start-poc again" }
+$doctorOut = Invoke-Doctor
+if ($doctorRc -ne 0 -and $zTarget -eq "simulated") {
+    # Nothing real is touched: create the missing simulated PAC files, then check again.
+    $missing = Get-MissingRegions $doctorOut
+    foreach ($r in $missing) {
+        Step "Creating the simulated PAC file of region $r (a run only creates auto-mode regions)"
+        $rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "bootstrap", "--region", $r, "--yes")
+        if ($rc -ne 0) { Fail "bootstrap of region $r failed (exit $rc)" "see the message above" }
+    }
+    if ($missing.Count -gt 0) { Step "pac-sync doctor"; $doctorOut = Invoke-Doctor }
+}
+if ($doctorRc -ne 0) {
+    $missing = Get-MissingRegions $doctorOut
+    if ($missing.Count -gt 0) {
+        Write-Host ""
+        Write-Host "These regions have no PAC file in ZIA yet and a run does not create them. Create them explicitly:" -ForegroundColor Yellow
+        foreach ($r in $missing) { Write-Host "  .venv\Scripts\pac-sync --config $Config bootstrap --region $r --yes" }
+    }
+    Fail "doctor reported failures" "fix the [FAIL] lines above, then run start-poc again"
+}
 
 if ($SkipSync) {
     Step "Skipping the sync (-SkipSync)"
@@ -172,7 +255,7 @@ if ($SkipSync) {
     Step "pac-sync run"
     $rc = Invoke-Native $venvPy @("-m", "pac_sync", "--config", $Config, "run")
     if ($rc -eq 1) {
-        Write-Warning "the run finished with a failed or blocked region (exit 1): see the log above"
+        Write-Warning "the run finished with a failed, blocked or not-activated region (exit 1): see the log above"
     } elseif ($rc -ne 0) {
         Fail "pac-sync run failed (exit $rc)" "see the log above; .venv\Scripts\pac-sync --config $Config doctor"
     }
@@ -189,6 +272,13 @@ Write-Host "Ready. Next steps:" -ForegroundColor Green
 Write-Host "  1. In the portal, act as jdoe (top right) and submit a 'Request PAC exception' for region EMEA."
 Write-Host "  2. Approve it as mmanager, then nsec (and cab for a global rule)."
 Write-Host "  3. .venv\Scripts\pac-sync$cfgArg run      -> the request closes, the rule shows Deployed."
-Write-Host "  4. Open sim-zia\emea-proxy.pac\deployed.pac (what ZIA would serve) and git -C $repoPath log -p."
+if ($zTarget -eq "live") {
+    Write-Host "  4. ZIA admin portal > Hosted PAC Files (menu name may differ): open ${prefix}emea-proxy.pac > Versions."
+    Write-Host "     Or from here: .venv\Scripts\pac-sync$cfgArg versions --region EMEA  |  diff --region EMEA --from deployed --to render"
+    Write-Host "  5. Promote NA: .venv\Scripts\pac-sync$cfgArg promote --region NA;  roll back: rollback --region EMEA --to lkg"
+    Write-Host "  6. Mock portal /pacsync shows the latest ZIA versions per region. After the demo: demo-cleanup --yes"
+} else {
+    Write-Host "  4. Open $simDir\emea-proxy.pac\deployed.pac (what ZIA would serve) and git -C $repoPath log -p."
+}
 Write-Host "  .venv\Scripts\pac-sync$cfgArg status | doctor | render --region EMEA"
 exit 0
