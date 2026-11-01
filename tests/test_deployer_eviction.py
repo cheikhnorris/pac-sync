@@ -1,9 +1,9 @@
-"""ZiaDeployer.stage at the 10-version cap, the version cache, and the LKG / delete / probe helpers (simulated ZIA)."""
+"""ZiaDeployer.stage at the 10-version cap, the version cache, and the LKG / delete / probe helpers (fake ZIA)."""
 
 import pytest
 
 from pac_sync.deployer import DeployError, ZiaDeployer
-from pac_sync.simzia import MAX_VERSIONS, SimulatedZscalerClient
+from .fake_zia import MAX_VERSIONS, SimulatedZscalerClient
 
 from .helpers import PAC, SEED_MESSAGE, statuses
 

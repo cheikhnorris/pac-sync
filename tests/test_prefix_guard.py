@@ -6,8 +6,8 @@ from pac_sync import main as m
 from pac_sync import zia_cli
 from pac_sync.deployer import ZiaDeployer, effective_pac_name, make_zscaler_client, validate_prefix_config
 from pac_sync.envfile import ConfigError
-from pac_sync.simzia import SimulatedZscalerClient
 
+from .fake_zia import SimulatedZscalerClient
 from .helpers import PAC, SEED_MESSAGE, add_rule, demo_cfg, pac_file, sim
 
 WRITES = ("add_pac_file", "clone_pac_file", "update_pac_file", "delete_pac_file")
@@ -48,7 +48,7 @@ def test_effective_name_and_startup_check():
     with pytest.raises(ConfigError, match="pac_name_prefix"):
         validate_prefix_config({"only_prefixed": True})
     with pytest.raises(ConfigError):  # the factory checks it too: nothing is built on a broken guard
-        make_zscaler_client({"target": "simulated", "only_prefixed": True})
+        make_zscaler_client({"only_prefixed": True})
     validate_prefix_config({"only_prefixed": True, "pac_name_prefix": "x-"})
     validate_prefix_config({"pac_name_prefix": "x-"})  # a prefix without the guard is fine
 
@@ -156,7 +156,7 @@ def test_unknown_name_is_refused_without_any_request(tmp_path):
 
     client.zia.pac_files = Everything()
     d = ZiaDeployer.__new__(ZiaDeployer)
-    d.client, d.pac, d.dry_run, d.prefix, d.only_prefixed, d.on_evict = client, client.zia.pac_files, False, "demo-", True, None
+    d.client, d.pac, d.prefix, d.only_prefixed, d.on_evict = client, client.zia.pac_files, "demo-", True, None
     d._cache, d._names = {}, {}
     for attempt in (lambda: d.stage(pac_id, PAC, "m"), lambda: d.deploy(pac_id, 1), lambda: d.set_lkg(pac_id, 1),
                     lambda: d.remove_lkg(pac_id), lambda: d.delete_pac(pac_id), lambda: d.probe_write(pac_id, "m")):

@@ -1,4 +1,4 @@
-"""versions / diff / lkg / rollback --to lkg through the CLI functions (simulated ZIA, demo-like config)."""
+"""versions / diff / lkg / rollback --to lkg through the CLI functions (fake ZIA, demo-like config)."""
 
 import json
 

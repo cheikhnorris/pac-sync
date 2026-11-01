@@ -154,3 +154,12 @@ def test_live_bootstrap_does_not_prompt_without_a_console(tmp_path, monkeypatch,
 
     assert m.bootstrap_region(cfg, "EMEA", yes=False, confirm=no_prompt) == 2
     assert "needs --yes (stdin is not interactive)" in caplog.text
+
+
+def test_removed_simulated_target_fails_early(tmp_path, monkeypatch, caplog):
+    cfg = demo_cfg(tmp_path, monkeypatch)
+    cfg["zscaler"]["target"] = "simulated"
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump({k: v for k, v in cfg.items() if not k.startswith("_")}), encoding="utf-8")
+    assert m.main(["--config", str(path), "--env-file", str(tmp_path / "none.env"), "render", "--region", "EMEA"]) == 3
+    assert "removed" in caplog.text

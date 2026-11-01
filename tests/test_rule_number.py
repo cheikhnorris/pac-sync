@@ -11,6 +11,8 @@ from pac_sync.normalizer import normalize
 from pac_sync.renderer import PacRenderer
 from pac_sync.zia_history import parse_rules
 
+from .fake_zia import install_fake_zia
+
 from .conftest import ROOT
 
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -55,7 +57,8 @@ def test_a_sync_reports_it_to_servicenow_and_deploys_nothing_of_it(tmp_path, mon
     cfg = yaml.safe_load((ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8"))
     cfg["servicenow"]["sample_file"] = str(path)
     cfg["history"]["repo_path"] = str(tmp_path / "history")
-    cfg["zscaler"].update(target="simulated", simulated={"state_dir": str(tmp_path / "sim")}, pac_domain="example.com",
+    install_fake_zia(monkeypatch, tmp_path / "sim")
+    cfg["zscaler"].update(pac_domain="example.com",
                           bootstrap="missing")
     cfg["regions"] = {"EMEA": {"mode": "auto"}, "NA": {"mode": "auto"}, "APAC": {"mode": "auto"}}
     sources = []

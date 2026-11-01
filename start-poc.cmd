@@ -1,5 +1,5 @@
 @echo off
-rem PAC Sync proof of concept: one double-click. Arguments are passed to start-poc.ps1 (e.g. -Config config\config.mock.yaml).
+rem PAC Sync proof of concept: one double-click. Arguments are passed to start-poc.ps1 (e.g. -Config config\config.demo.local.yaml).
 setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-poc.ps1" %*
 set "RC=%ERRORLEVEL%"

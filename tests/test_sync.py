@@ -15,7 +15,7 @@ from .conftest import ROOT
 class FakeDeployer:
     instances = []
 
-    def __init__(self, client, dry_run=False):
+    def __init__(self, client):
         self.next_version = 2
         self.calls = []
         FakeDeployer.instances.append(self)
@@ -106,21 +106,25 @@ def test_dry_run_leaves_no_trace(cfg):
     assert _git(repo, "status", "--porcelain").strip() == ""
 
 
-# --- Phase 1: simulated ZIA, bootstrap, live cap, push failure, foreign files -----------------------------------
+# --- Phase 1: fake ZIA, bootstrap, live cap, push failure, foreign files -----------------------------------
 
 from pac_sync.deployer import ZiaDeployer  # noqa: E402
 from pac_sync.history import GitHistory  # noqa: E402
-from pac_sync.simzia import SimulatedZscalerClient  # noqa: E402
+from .fake_zia import SimulatedZscalerClient, install_fake_zia  # noqa: E402
 from pac_sync.snow_client import make_source as real_make_source  # noqa: E402
 
 
 @pytest.fixture
 def sim_cfg(tmp_path, monkeypatch):
-    """Example config, file source, simulated ZIA in tmp; the real ZiaDeployer and client factory."""
+    """Example config, file source, fake ZIA in tmp; the real ZiaDeployer and client factory."""
     monkeypatch.chdir(ROOT)
     data = yaml.safe_load((ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8"))
     data["history"]["repo_path"] = str(tmp_path / "history")
-    data["zscaler"].update(target="simulated", simulated={"state_dir": str(tmp_path / "sim")}, pac_domain="example.com")
+    data["zscaler"].update(pac_domain="example.com")
+    data["_sim"] = str(tmp_path / "sim")
+    install_fake_zia(monkeypatch, tmp_path / "sim")
+    for k, v in {"ZSCALER_CLIENT_ID": "id", "ZSCALER_CLIENT_SECRET": "secret", "ZSCALER_VANITY_DOMAIN": "acme"}.items():
+        monkeypatch.setenv(k, v)
     data["regions"] = {"EMEA": {"mode": "auto"}, "NA": {"mode": "stage"}, "APAC": {"mode": "paused"}}
     sources = []
 
@@ -138,7 +142,7 @@ SEED_MESSAGE = "PAC Sync 20260101T000000Z seed sha256:000000000000"
 
 
 def _sim(cfg):
-    return SimulatedZscalerClient(cfg["zscaler"]["simulated"]["state_dir"])
+    return SimulatedZscalerClient(cfg["_sim"])
 
 
 def _read(path, mode="r"):
@@ -212,27 +216,11 @@ def test_bootstrap_missing_creates_pac(sim_cfg, tmp_path):
 
 def test_live_max_mode_caps_auto(cfg):
     cfg["deploy"]["live_max_mode"] = "stage"
-    assert m.region_mode(cfg, "EMEA") == "stage"  # target live (example config)
-    cfg["zscaler"]["target"] = "simulated"
-    assert m.region_mode(cfg, "EMEA") == "auto"  # the cap applies to live targets only
-    del cfg["zscaler"]["target"]  # absent = live
+    assert m.region_mode(cfg, "EMEA") == "stage"
     assert m.region_mode(cfg, "EMEA") == "stage"
     assert m.sync(cfg) == 0
     calls = FakeDeployer.instances[-1].calls
     assert ("stage", 11) in calls and not any(c[0] == "deploy" for c in calls)
-
-
-def test_mock_profile_switched_to_live_uses_sdk_and_never_deploys(monkeypatch):
-    zscaler = pytest.importorskip("zscaler")
-    data = yaml.safe_load((ROOT / "config" / "config.mock.yaml").read_text(encoding="utf-8"))
-    data["zscaler"]["target"] = "live"  # the only change
-    for k, v in {"ZSCALER_CLIENT_ID": "id", "ZSCALER_CLIENT_SECRET": "secret", "ZSCALER_VANITY_DOMAIN": "acme"}.items():
-        monkeypatch.setenv(k, v)
-    client = m.make_zscaler_client(data["zscaler"])
-    assert isinstance(client, zscaler.ZscalerClient)
-    assert {code: m.region_mode(data, code) for code in ("EMEA", "NA", "APAC")} == \
-        {"EMEA": "stage", "NA": "stage", "APAC": "stage"}
-    assert m.auto_bootstrap_refusal(data) is not None  # a run never creates a DEPLOYED PAC file on live
 
 
 def test_push_failure_still_writes_back(sim_cfg, monkeypatch):
@@ -286,13 +274,13 @@ def test_bootstrap_command_live_needs_confirmation(cfg, monkeypatch):
 
 
 def test_bootstrap_command_on_sim_records_state(sim_cfg, tmp_path, capsys):
-    assert m.bootstrap_region(sim_cfg, "EMEA") == 0
+    assert m.bootstrap_region(sim_cfg, "EMEA", yes=True) == 0
     repo = sim_cfg["history"]["repo_path"]
     st = _state(repo, "EMEA")
     assert st["deployed"]["version"] == 1 and st["pac_id"] == 1
     assert (tmp_path / "sim" / "emea-proxy.pac" / "deployed.pac").read_bytes() == _read(f"{repo}/regions/EMEA/proxy.pac", "rb")
     assert "EMEA-v1" in _git(repo, "tag")
-    assert m.bootstrap_region(sim_cfg, "EMEA") == 1  # already exists: refused
+    assert m.bootstrap_region(sim_cfg, "EMEA", yes=True) == 1  # already exists: refused
     # The next run sees EMEA deployed with the current render: no new version.
     sim_cfg["regions"]["NA"] = {"mode": "paused"}
     assert m.sync(sim_cfg) == 0

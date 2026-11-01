@@ -1,8 +1,7 @@
-"""ZIA PAC file operations through zscaler-sdk-python (client.zia.pac_files), or the simulator in simzia.py.
+"""ZIA PAC file operations through zscaler-sdk-python (client.zia.pac_files).
 
-`make_zscaler_client` picks the target from `zscaler.target` (simulated | live, absent = live) and, for live,
-the auth mode from `zscaler.auth` (oneapi | legacy, absent = oneapi). Every client exposes `.zia.pac_files` and
-`.zia.activate`, so ZiaDeployer does not care which one it drives.
+`make_zscaler_client` picks the auth mode from `zscaler.auth` (oneapi | legacy, absent = oneapi). Every client
+exposes `.zia.pac_files` and `.zia.activate`, so ZiaDeployer does not care which one it drives.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from .envfile import ConfigError, require_env
 
 log = logging.getLogger(__name__)
 
-TARGETS = ("simulated", "live")
+TARGETS = ("live",)
 AUTH_MODES = ("oneapi", "legacy")
 MAX_VERSIONS = 10  # ZIA keeps at most 10 versions per PAC file
 PROTECTED = ("DEPLOYED", "LKG", "STAGE")  # never deleted to make room
@@ -32,19 +31,15 @@ class PacFileNotFound(DeployError):
 def zscaler_target(cfg: dict) -> str:
     target = (cfg or {}).get("target") or "live"
     if target not in TARGETS:
-        raise ConfigError(f"zscaler.target must be one of {', '.join(TARGETS)}, not '{target}'")
+        raise ConfigError(f"zscaler.target '{target}' was removed: PAC Sync only drives a real ZIA tenant; "
+                          "run `pac-sync setup --force` to write a live config with a demo- PAC name prefix")
     return target
 
 
 def make_zscaler_client(cfg: dict):
-    """Build the ZIA client for `zscaler.target` / `zscaler.auth`. Missing env vars raise ConfigError (name only)."""
+    """Build the ZIA client for `zscaler.auth`. Missing env vars raise ConfigError (name only)."""
     validate_prefix_config(cfg)
-    if zscaler_target(cfg) == "simulated":
-        from .simzia import SimulatedZscalerClient
-
-        sim = cfg.get("simulated") or {}
-        return SimulatedZscalerClient(sim.get("state_dir") or "./sim-zia", bool(sim.get("strict_commit")))
-
+    zscaler_target(cfg)
     auth = cfg.get("auth") or "oneapi"
     if auth == "oneapi":
         why = "zscaler.auth=oneapi"
@@ -137,10 +132,9 @@ class ZiaDeployer:
     per pac_id for the life of the instance; every write drops it.
     """
 
-    def __init__(self, client, dry_run: bool = False):
+    def __init__(self, client):
         self.client = client
         self.pac = client.zia.pac_files if client else None
-        self.dry_run = dry_run
         self.prefix = ""
         self.only_prefixed = False
         self.on_evict: Optional[Callable[[object], None]] = None
@@ -248,9 +242,6 @@ class ZiaDeployer:
 
     def stage(self, pac_id: int, content: str, message: str) -> int:
         """Create a new STAGE version from the deployed one. Return its version number."""
-        if self.dry_run:
-            log.info("[dry-run] would stage PAC %s: %s", pac_id, message)
-            return -1
         self.assert_writable(pac_id)
         versions = self.versions(pac_id, with_content=True)
         deployed = self._by_status(versions, "DEPLOYED")
@@ -300,9 +291,6 @@ class ZiaDeployer:
 
     def deploy(self, pac_id: int, version: int) -> None:
         """Promote an existing version (staged, or an older one for rollback) to DEPLOYED."""
-        if self.dry_run:
-            log.info("[dry-run] would deploy PAC %s version %s", pac_id, version)
-            return
         self.assert_writable(pac_id)
         target = next((v for v in self.versions(pac_id, with_content=True) if int(v.pac_version) == version), None)
         if target is None:
@@ -384,8 +372,5 @@ class ZiaDeployer:
         self._cache.pop(pac_id, None)
 
     def activate(self) -> None:
-        if self.dry_run:
-            log.info("[dry-run] would activate ZIA configuration")
-            return
         _unwrap(self.client.zia.activate.activate(), "activate")
         log.info("ZIA configuration activated")

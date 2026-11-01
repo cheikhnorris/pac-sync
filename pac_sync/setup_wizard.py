@@ -1,9 +1,8 @@
 """`pac-sync setup`: write config/config.yaml and .env from a profile, asking only what the profile does not know.
 
 Profiles:
-    mock    local ServiceNow mock (snow-mock) + simulated ZIA, history in ./pac-history-mock, no push.
-            Writes the mock's public demo OAuth client to .env (SNOW_CLIENT_ID / SNOW_CLIENT_SECRET).
-    demo    the same mock ServiceNow, but a REAL ZIA tenant, with every PAC file named with a prefix (config.demo.yaml):
+    demo    local ServiceNow mock (snow-mock) + a REAL ZIA tenant, with every PAC file named with a prefix
+            (config.demo.yaml). Writes the mock's public demo OAuth client to .env (SNOW_CLIENT_ID / SNOW_CLIENT_SECRET);
             asks for the ZIA credentials (OneAPI recommended), the PAC domain and the prefix; history mode zia (no git).
     custom  starts from config/config.example.yaml (real ServiceNow, live ZIA).
 
@@ -23,10 +22,9 @@ import yaml
 
 from .envfile import load_env_file, parse_env_file, write_env_file
 
-PROFILES = {"mock": "config.mock.yaml", "demo": "config.demo.yaml", "custom": "config.example.yaml"}
+PROFILES = {"demo": "config.demo.yaml", "custom": "config.example.yaml"}
 MOCK_ENV = {"SNOW_CLIENT_ID": "pac-sync", "SNOW_CLIENT_SECRET": "pac-sync-secret"}  # public demo client of snow-mock
 ZIA_CHOICES = {
-    "1": "simulated",
     "2": "oneapi-secret",
     "3": "oneapi-private-key",
     "4": "legacy",
@@ -69,13 +67,7 @@ class Prompter:
 
 
 def _ask_zia(p: Prompter, z: dict, env: Dict[str, str], default_choice: str, live_only: bool = False) -> None:
-    choices = {k: v for k, v in ZIA_CHOICES.items() if not (live_only and v == "simulated")}
-    kind = ZIA_CHOICES[p.choice("ZIA target", choices, default_choice)]
-    if kind == "simulated":
-        z["target"] = "simulated"
-        z.setdefault("simulated", {})["state_dir"] = p.text("Simulated ZIA state folder",
-                                                           (z.get("simulated") or {}).get("state_dir") or "./sim-zia")
-        return
+    kind = ZIA_CHOICES[p.choice("ZIA target", ZIA_CHOICES, default_choice)]
     z["target"] = "live"
     if kind == "legacy":
         z["auth"] = "legacy"
@@ -146,15 +138,15 @@ def run_setup(profile: Optional[str] = None, non_interactive: bool = False, forc
         out(f"{config_path} already exists: not overwritten (use --force to replace it).")
         return 2
     if profile is None:
-        profile = "mock" if non_interactive else p.choice(
-            "Profile", {"mock": "local demo", "demo": "mock ServiceNow + real ZIA with a prefix", "custom": "real tenant"}, "mock")
+        profile = "demo" if non_interactive else p.choice(
+            "Profile", {"demo": "mock ServiceNow + real ZIA with a prefix", "custom": "real tenant"}, "demo")
 
     cfg = yaml.safe_load(profile_path(profile).read_text(encoding="utf-8"))
-    env: Dict[str, str] = dict(MOCK_ENV) if profile in ("mock", "demo") else {}
+    env: Dict[str, str] = dict(MOCK_ENV) if profile == "demo" else {}
     if not non_interactive:
         if profile == "custom":
             _ask_servicenow(p, cfg["servicenow"], env)
-        _ask_zia(p, cfg.setdefault("zscaler", {}), env, "1" if profile == "mock" else "2", live_only=profile == "demo")
+        _ask_zia(p, cfg.setdefault("zscaler", {}), env, "2", live_only=profile == "demo")
         h = cfg["history"]
         if profile != "demo":  # the demo keeps its history in ZIA (mode zia): no repository to ask for
             h["repo_path"] = p.text("History repository folder", h.get("repo_path") or "./pac-history")

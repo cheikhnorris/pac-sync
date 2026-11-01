@@ -3,12 +3,9 @@
 About 15 minutes. Windows 10 or 11, PowerShell, internet access for the installs. No admin rights are needed apart
 from the installers.
 
-Part A gets the local demo running: the ServiceNow mock with a simulated ZIA. Part B points the same demo at a real
-ZIA tenant.
+The demo runs the ServiceNow mock against a real ZIA tenant, so prepare the ZIA side (step 3) before starting.
 
 ---
-
-## Part A: local demo
 
 ### 1. Install the tools (one time)
 
@@ -43,7 +40,24 @@ gh repo clone cheikhnorris/snow-mock
 Keep the two folders side by side (`C:\pac-demo\pac-sync` and `C:\pac-demo\snow-mock`), because the launcher looks
 for `..\snow-mock`. Any parent folder works.
 
-### 3. Start everything
+The demo writes **only** to PAC files whose name starts with `demo-`, so production PAC files are never touched.
+It never activates other admins' pending changes, and it pushes nothing to git.
+
+### 3. Prepare in ZIA (with the ZIA admin)
+
+- **API client.** In ZIdentity, create an API client (OneAPI is recommended) with a role that can manage **Hosted PAC
+  Files** and **activate** changes, and nothing else. Note four values:
+  - the client ID;
+  - the client secret, or a private key;
+  - the vanity domain: the `<name>` in `<name>.zslogin.net`;
+  - the cloud, if it isn't production.
+- **PAC domain.** The domain ZIA asks for when it creates a PAC file.
+- **Prefix.** Check that no existing PAC file or Client Connector forwarding profile uses `demo-`. If one does, pick
+  another prefix.
+- **Pending changes.** The ZIA portal must show no pending changes before the demo. If it does, PAC Sync still saves
+  its versions but won't activate them.
+
+### 4. Start everything
 
 ```powershell
 cd C:\pac-demo\pac-sync
@@ -54,14 +68,14 @@ The first start takes 2–3 minutes. In order, it:
 
 1. checks Python and PHP;
 2. creates `.venv` and installs pac-sync and the Zscaler SDK (from PyPI);
-3. writes `config\config.yaml` and `.env` for the local demo;
+3. writes `config\config.yaml` and `.env` from the demo profile (it asks for the ZIA values from step 3, typed hidden);
 4. starts the ServiceNow mock at http://127.0.0.1:8090;
 5. runs `pac-sync doctor` and a first `pac-sync run`;
 6. opens the portal.
 
 Every line should be OK; the script stops and says what to fix if one isn't.
 
-### 4. Run the demo
+### 5. Run the demo
 
 1. Portal, **Acting as** menu (top right): **jdoe**. Open **Request PAC exception**, then create a new rule for region
    EMEA, for example DIRECT for `partner.example`.
@@ -81,31 +95,10 @@ Every line should be OK; the script stops and says what to fix if one isn't.
    .venv\Scripts\pac-sync resume --region EMEA
    ```
 
-**Start over:** `.\start-poc.cmd -Reset` deletes only the demo data (mock database, simulator, local history).
+**Start over:** `.\start-poc.cmd -Reset` deletes only the demo data (mock database and the demo state file).
 **Stop the mock:** `powershell -ExecutionPolicy Bypass -File ..\snow-mock\stop.ps1`.
 
----
-
-## Part B: real ZIA tenant
-
-The demo profile writes **only** to PAC files whose name starts with `demo-`, so production PAC files are never touched.
-It never activates other admins' pending changes, and it pushes nothing to git.
-
-### 5. Prepare in ZIA (with the ZIA admin)
-
-- **API client.** In ZIdentity, create an API client (OneAPI is recommended) with a role that can manage **Hosted PAC
-  Files** and **activate** changes, and nothing else. Note four values:
-  - the client ID;
-  - the client secret, or a private key;
-  - the vanity domain: the `<name>` in `<name>.zslogin.net`;
-  - the cloud, if it isn't production.
-- **PAC domain.** The domain ZIA asks for when it creates a PAC file.
-- **Prefix.** Check that no existing PAC file or Client Connector forwarding profile uses `demo-`. If one does, pick
-  another prefix.
-- **Pending changes.** The ZIA portal must show no pending changes before the demo. If it does, PAC Sync still saves
-  its versions but won't activate them.
-
-### 6. Configure the laptop
+### 6. Use a separate config file (optional)
 
 ```powershell
 cd C:\pac-demo\pac-sync
@@ -115,10 +108,10 @@ cd C:\pac-demo\pac-sync
 Answer the questions. Secrets are typed hidden and saved only in `.env`, which git ignores. For ServiceNow, keep the
 defaults: `api`, `http://127.0.0.1:8090`, `oauth`, client ID `pac-sync`, secret `pac-sync-secret`.
 
-### 7. Check, then run
+### 7. Check, then run with that file
 
 ```powershell
-.\start-poc.cmd -Profile demo -Config config\config.demo.local.yaml     # starts the mock, runs doctor
+.\start-poc.cmd -Config config\config.demo.local.yaml     # starts the mock, runs doctor
 .venv\Scripts\pac-sync --config config\config.demo.local.yaml doctor --write-probe --region EMEA
 .venv\Scripts\pac-sync --config config\config.demo.local.yaml bootstrap --region NA --yes
 .venv\Scripts\pac-sync --config config\config.demo.local.yaml run
@@ -129,7 +122,7 @@ defaults: `api`, `http://127.0.0.1:8090`, `oauth`, client ID `pac-sync`, secret 
   permissions. It refuses to run while ZIA has pending changes.
 - `bootstrap` creates the NA PAC file. EMEA and APAC are created by the first run.
 
-Run the demo from step 4, adding `--config config\config.demo.local.yaml` to each command. In the ZIA portal, open
+Run the demo from step 5, adding `--config config\config.demo.local.yaml` to each command. In the ZIA portal, open
 **Hosted PAC Files**, then `demo-emea-proxy.pac`, then its versions: each version's message names the run and the
 rules it changed.
 

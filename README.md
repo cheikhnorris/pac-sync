@@ -86,38 +86,36 @@ Needs git, Python 3.10 - 3.12 and PHP 8.4 (the launcher offers `winget install P
 `start-poc.cmd`, or from a terminal:
 
 ```powershell
-.\start-poc.cmd                                   # uses config\config.yaml; creates it from the mock profile if missing
-.\start-poc.cmd -Config config\config.mock.yaml   # local-only demo, whatever config\config.yaml says
-.\start-poc.cmd -Reset                            # fresh demo: mock database, sim-zia\ and pac-history-mock\ deleted
+.\start-poc.cmd                                           # uses config\config.yaml; creates it from the demo profile if missing
+.\start-poc.cmd -Config config\config.demo.local.yaml     # another config file
+.\start-poc.cmd -Reset                                    # fresh demo: mock database and the demo state file deleted
 ```
 
 It checks the prerequisites, creates `.venv`, installs the SDK (editable from `..\zscaler-sdk-python` when present,
-else from PyPI) and pac-sync, writes `config\config.yaml` + `.env` with `pac-sync setup --profile mock` when there is
-no config, starts the ServiceNow mock on http://127.0.0.1:8090, runs `pac-sync doctor` and a first `pac-sync run`,
-then opens the portal. No ExecutionPolicy change and no manual environment variables. Other switches: `-NoBrowser`,
+else from PyPI) and pac-sync, writes `config\config.yaml` + `.env` with `pac-sync setup --profile demo` when there is
+no config (it asks for the ZIA credentials: pac-sync only drives a real ZIA tenant, see "Demo on a real tenant"),
+starts the ServiceNow mock on http://127.0.0.1:8090, runs `pac-sync doctor` and a first `pac-sync run`,
+then opens the portal. No ExecutionPolicy change. Other switches: `-NoBrowser`,
 `-SkipSync`, `-MockPath`, `-SdkPath`. `-Reset` never touches `pac-history\`.
 
-The mock profile (`config/config.mock.yaml`) is local only: ServiceNow mock, **simulated ZIA** (`zscaler.target:
-simulated`, state in `sim-zia\`), history in `pac-history-mock\`, nothing pushed. EMEA and APAC are `auto`, NA is
-`stage`. The first run creates the EMEA and APAC PAC files in the simulator (`zscaler.bootstrap: missing`; a run only creates
-auto-mode regions); the launcher creates NA's with `pac-sync bootstrap --region NA --yes` because the simulator touches nothing real.
-The simulator keeps `sim-zia\<name>\deployed.pac`; the folder is the PAC file name when it is a plain lower-case file name, otherwise
-the sanitized name plus a hash of the exact name, so two names never share a folder.
+The demo profile (`config/config.demo.yaml`) uses the ServiceNow mock and a real ZIA tenant with prefixed PAC files
+(`demo-`), history mode `zia`. A run only creates the PAC file of auto-mode regions; for the others doctor prints the
+`pac-sync bootstrap --region X --yes` command.
 
 Demo script:
 
 1. In the portal, act as **jdoe** (menu top right) and submit **Request PAC exception**: new rule, region EMEA.
 2. Approve it as **mmanager**, then **nsec** (and **cab** for a global rule). The rule is now `approved`.
-3. `.venv\Scripts\pac-sync --config config\config.mock.yaml run`
+3. `.venv\Scripts\pac-sync run`
 4. The request closes (`closed_complete`), the rule shows `deployed` with its ZIA version, and the request page lists
    the `u_pac_deployment` rows.
-5. Open `sim-zia\emea-proxy.pac\deployed.pac`: byte-identical to `pac-history-mock\regions\EMEA\proxy.pac`.
+5. Check the version in the ZIA admin portal or with `pac-sync versions --region EMEA`.
    NA changes stay staged until `pac-sync promote --region NA`.
 
 ### Switch to a real tenant
 
 1. `pac-sync setup --profile custom` (or `--force` to replace an existing config): asks for ServiceNow, the ZIA
-   target (simulated, OneAPI client secret, OneAPI private key, legacy API key) and the history remote. Secrets are
+   target (OneAPI client secret, OneAPI private key, legacy API key) and the history remote. Secrets are
    read hidden and written only to `.env`.
 2. `pac-sync doctor`: every line must be OK (it reads ServiceNow and ZIA, changes nothing, never prints a secret).
 3. A region whose PAC file does not exist yet fails doctor with its name: `pac-sync bootstrap --region EMEA`
@@ -129,7 +127,6 @@ Demo script:
 | OneAPI client secret | `target: live`, `auth: oneapi` | `ZSCALER_CLIENT_ID`, `ZSCALER_CLIENT_SECRET`, `ZSCALER_VANITY_DOMAIN` |
 | OneAPI private key | `target: live`, `auth: oneapi`, `private_key_env: ZSCALER_PRIVATE_KEY` | `ZSCALER_CLIENT_ID`, `ZSCALER_PRIVATE_KEY` (PEM text or key file path), `ZSCALER_VANITY_DOMAIN` |
 | Legacy (not on ZIdentity) | `target: live`, `auth: legacy` | `ZIA_USERNAME`, `ZIA_PASSWORD`, `ZIA_API_KEY`, `ZIA_CLOUD` (e.g. `zscalertwo`) |
-| Simulated | `target: simulated` | none |
 
 `.env` is plaintext and git-ignored: protect the file (NTFS permissions) on a shared host. Ending a ZIA API
 session activates pending changes, and both SDK clients end it on close (legacy always, OneAPI after any write). So
@@ -140,7 +137,7 @@ The ServiceNow side (tables, workflow, validation, integration account) is speci
 **PAC Sync – ServiceNow Implementation Requirements** document. The field names there are the contract with this code.
 
 For local development without a ServiceNow instance, run the PHP mock in [`../snow-mock`](../snow-mock/README.md)
-and use `config/config.mock.yaml` (Table API over OAuth, simulated ZIA, local history; see Quick start).
+and use `config/config.demo.yaml` (Table API over OAuth, real ZIA tenant; see Quick start).
 
 ## Layout
 
@@ -150,13 +147,12 @@ and use `config/config.mock.yaml` (Table API over OAuth, simulated ZIA, local hi
 | `pac_sync/normalizer.py` | Validation (host, domain, CIDR, URL pattern, injection characters), scope, validity dates, duplicate/conflict detection |
 | `pac_sync/renderer.py` | Deterministic Jinja2 rendering + SHA-256 |
 | `pac_sync/history.py` | Git repository: content, rule snapshot, ZIA state, tags |
-| `pac_sync/deployer.py` | ZIA client factory (simulated / OneAPI / legacy), `pac_files` stage / deploy / rollback / bootstrap, `activate` |
+| `pac_sync/deployer.py` | ZIA client factory (OneAPI / legacy), `pac_files` stage / deploy / rollback / bootstrap, `activate` |
 | `pac_sync/zia_history.py`, `zia_messages.py`, `zia_cli.py` | History mode `zia`, ZIA version commit messages, `versions` / `diff` / `lkg` / `demo-cleanup` |
 | `config/config.demo.yaml` | Mock ServiceNow + real ZIA with prefixed PAC files (see Demo on a real tenant) |
-| `pac_sync/simzia.py` | Simulated ZIA tenant (`zscaler.target: simulated`), state in `sim-zia/` |
 | `pac_sync/envfile.py` | `.env` loading and writing, required environment variables |
 | `pac_sync/doctor.py` | `pac-sync doctor` read-only checks |
-| `pac_sync/setup_wizard.py` | `pac-sync setup` profiles (mock, custom) |
+| `pac_sync/setup_wizard.py` | `pac-sync setup` profiles (demo, custom) |
 | `pac_sync/writeback.py` | Status updates for ServiceNow |
 | `pac_sync/main.py` | Orchestration, guardrails, lock, CLI |
 | `start-poc.cmd`, `start-poc.ps1` | One-step local proof of concept (see Quick start) |
@@ -214,7 +210,7 @@ pac-sync bootstrap --region EMEA    # create the region's PAC file in ZIA (asks 
 pac-sync demo-cleanup --yes         # delete the PAC files that start with zscaler.pac_name_prefix (needs only_prefixed: true)
 pac-sync doctor                     # read-only checks, exit 1 if any FAIL
 pac-sync doctor --write-probe --region EMEA   # also stage + unstage one PREFIXED PAC file, then activate (only if ZIA is ACTIVE first)
-pac-sync setup [--profile mock|demo|custom] [--non-interactive] [--force]
+pac-sync setup [--profile demo|custom] [--non-interactive] [--force]
 ```
 
 `run --force` also overrides a "manual change in ZIA" pause (see Versioning).
@@ -390,7 +386,7 @@ LKG after a successful deploy and activation.
 
 `tests/test_deployer_sdk.py` runs `ZiaDeployer` through the real SDK (URL building, body serialization, response
 models) with only the OAuth token and the HTTP send replaced. That proves what the code sends, not how ZIA answers.
-The simulated target (`pac_sync/simzia.py`) copies the same assumptions. Check these in a test tenant:
+The test fake (`tests/fake_zia.py`) copies the same assumptions. Check these in a test tenant:
 
 1. `update_pac_file(..., pac_version_action="DEPLOY")` and `"UNSTAGE"` accept the body `deployer._action` sends.
 2. Whether ZIA allows more than one STAGE version per PAC file (the code unstages the old one first).

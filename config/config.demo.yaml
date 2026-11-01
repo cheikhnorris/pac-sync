@@ -28,7 +28,6 @@ servicenow:
 
 zscaler:
   # live      = real tenant through zscaler-sdk-python (absent = live)
-  # simulated = local stand-in (pac_sync/simzia.py), state in simulated.state_dir; no tenant is called
   target: live
   # oneapi = OneAPI / ZIdentity (recommended for the demo) | legacy = API key + admin user (doctor warns)
   # Ending a ZIA session activates pending changes, so PAC Sync does not close the session while changes are pending.

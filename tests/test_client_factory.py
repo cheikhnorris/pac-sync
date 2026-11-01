@@ -3,7 +3,6 @@
 import pytest
 
 from pac_sync.deployer import ConfigError, make_zscaler_client
-from pac_sync.simzia import SimulatedZscalerClient
 
 zscaler = pytest.importorskip("zscaler")
 from zscaler import oneapi_client  # noqa: E402
@@ -32,9 +31,9 @@ def sdk(monkeypatch):
     return oneapi, legacy
 
 
-def test_simulated_needs_no_credentials(sdk, tmp_path):
-    client = make_zscaler_client({"target": "simulated", "simulated": {"state_dir": str(tmp_path)}})
-    assert isinstance(client, SimulatedZscalerClient) and client.state_dir == str(tmp_path)
+def test_simulated_target_is_rejected(sdk):
+    with pytest.raises(ConfigError, match="removed"):
+        make_zscaler_client({"target": "simulated"})
     assert sdk[0].configs == [] and sdk[1].configs == []
 
 

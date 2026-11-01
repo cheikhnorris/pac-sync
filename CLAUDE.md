@@ -7,16 +7,14 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 
 ```powershell
 .venv\Scripts\python -m pytest -q                                       # all tests (must pass)
-.venv\Scripts\python -m pac_sync --config config\config.mock.yaml run --dry-run
-.venv\Scripts\python -m pac_sync --config config\config.mock.yaml render --region EMEA
+.venv\Scripts\python -m pac_sync --config config\config.example.yaml render --region EMEA
 ```
 
 - Python 3.11 venv in `.venv` (the SDK needs >= 3.10). The SDK is installed editable from `..\zscaler-sdk-python`.
 - Local ServiceNow: `..\snow-mock` (PHP, `powershell -ExecutionPolicy Bypass -File ..\snow-mock\start.ps1`, http://127.0.0.1:8090).
   Env for the mock: `SNOW_CLIENT_ID=pac-sync`, `SNOW_CLIENT_SECRET=pac-sync-secret` (in `.env`, found next to the config's folder).
 - `config\config.demo.yaml` = mock ServiceNow + a REAL ZIA tenant with prefixed PAC files (`demo-`), history mode `zia`. Never run it
-  from an agent session without credentials and an explicit go; test it with a scratch copy that has `target: simulated`.
-- The owner's git-ignored `config\config.yaml` has its own simulated state dir (`sim-zia-owner/`); `-Reset` of `start-poc` refuses it.
+  from an agent session without credentials and an explicit go. Tests use the fake ZIA `tests/fake_zia.py` (injected by monkeypatching `make_zscaler_client`).
 
 ## Module map
 
@@ -29,10 +27,9 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 | `zia_history.py` | `history.mode: zia`: same interface as `GitHistory`, state derived from the ZIA versions + git-ignored `state_file` |
 | `zia_messages.py` | ZIA version commit message `PAC Sync <run-id> <CODE> +/-PACR sha256 git` (build, parse, 255 limit) |
 | `zia_cli.py` | `versions`, `diff`, `lkg`, `demo-cleanup` |
-| `deployer.py` | ZIA client factory (simulated / OneAPI / legacy), prefix guard, `pac_files` stage (explicit `delete_version`) / deploy / LKG / bootstrap / delete, version cache, `activate` |
+| `deployer.py` | ZIA client factory (OneAPI / legacy), prefix guard, `pac_files` stage (explicit `delete_version`) / deploy / LKG / bootstrap / delete, version cache, `activate` |
 | `writeback.py` | ServiceNow `u_pac_rule` status updates |
 | `main.py` | Orchestration, guardrails, drift check, activation guard, lock, CLI |
-| `simzia.py` | Simulated ZIA (`zscaler.target: simulated`): SDK-shaped client, state in `sim-zia/` |
 | `envfile.py` | `.env` loading/writing, `ConfigError`, `require_env` (names the variable, never the value) |
 | `doctor.py` | Read-only connectivity and configuration checks (`pac-sync doctor`) |
 | `setup_wizard.py` | `pac-sync setup`: writes git-ignored `config/config.yaml` and `.env` |
@@ -62,8 +59,8 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
   environment or the git-ignored `.env`. Never log a value: report "set (N chars)". Mask credentials in git remote URLs.
 - **History scope:** pac-sync stages, commits, diffs and discards `regions/` only; other folders in the history repo
   (e.g. `backups/` written by `snow-mock/backup.ps1` under the shared `.pac-sync.lock`) are never touched.
-- **Live safety:** `deploy.live_max_mode` caps what a region may do on a live target; automatic bootstrap is refused on
-  a capped live target (use `pac-sync bootstrap --region X --yes`).
+- **Live safety:** `deploy.live_max_mode` caps what a region may do; automatic bootstrap is refused on
+  a capped config (use `pac-sync bootstrap --region X --yes`).
 - **ZIA calls are not verified against a live tenant** (see README "Verify before production"). Tests use a fake ZIA or the real SDK with mocked HTTP (`tests/test_deployer_sdk.py`).
 
 ## Conventions

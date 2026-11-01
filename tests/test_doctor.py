@@ -1,13 +1,14 @@
-"""doctor: read-only checks with the file source and the simulated ZIA (no network)."""
+"""doctor: read-only checks with the file source and the fake ZIA (no network)."""
 
 import pytest
 import yaml
 
 from pac_sync import doctor as d
 from pac_sync.deployer import ZiaDeployer
-from pac_sync.simzia import SimulatedZscalerClient
+from pac_sync import deployer
 
 from .conftest import ROOT
+from .fake_zia import SimulatedZscalerClient, install_fake_zia
 
 SEED_MESSAGE = "PAC Sync 20260101T000000Z seed sha256:000000000000"
 SECRETS = {"SNOW_CLIENT_SECRET": "snow-Secret-123", "ZSCALER_CLIENT_SECRET": "zs-Secret-456"}
@@ -18,7 +19,10 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.chdir(ROOT)
     data = yaml.safe_load((ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8"))
     data["history"]["repo_path"] = str(tmp_path / "history")
-    data["zscaler"].update(target="simulated", simulated={"state_dir": str(tmp_path / "sim")}, pac_domain="example.com")
+    data["zscaler"].update(pac_domain="example.com")
+    install_fake_zia(monkeypatch, tmp_path / "sim")
+    for k, v in {"ZSCALER_CLIENT_ID": "id", "ZSCALER_CLIENT_SECRET": "secret", "ZSCALER_VANITY_DOMAIN": "acme"}.items():
+        monkeypatch.setenv(k, v)
     data["regions"] = {"EMEA": {"mode": "auto"}, "NA": {"mode": "stage"}, "APAC": {"mode": "paused"}}
     path = tmp_path / "config.yaml"
 
@@ -65,11 +69,11 @@ def test_missing_pac_fails_naming_region(setup):
 
 def test_missing_env_var_fails_naming_it(setup, monkeypatch):
     data, run, tmp_path = setup
-    data["zscaler"]["target"] = "live"
     for name in ("ZSCALER_CLIENT_ID", "ZSCALER_CLIENT_SECRET", "ZSCALER_VANITY_DOMAIN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ZSCALER_CLIENT_ID", "cid")
     monkeypatch.setenv("ZSCALER_VANITY_DOMAIN", "acme")
+    monkeypatch.setattr(d, "make_zscaler_client", deployer.make_zscaler_client)  # the real factory, not the fake
     code, out = run(data)
     assert code == 1
     assert "[FAIL] env ZSCALER_CLIENT_SECRET: not set" in out
@@ -78,15 +82,13 @@ def test_missing_env_var_fails_naming_it(setup, monkeypatch):
 
 def test_secret_values_never_printed(setup, monkeypatch):
     data, run, tmp_path = setup
-    data["zscaler"]["target"] = "live"
     env_file = tmp_path / ".env"
     env_file.write_text("".join(f"{k}={v}\n" for k, v in SECRETS.items()), encoding="utf-8")
     for k, v in SECRETS.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("ZSCALER_CLIENT_ID", "cid")
     monkeypatch.setenv("ZSCALER_VANITY_DOMAIN", "acme")
-    # Live config, but the client is the simulator: no tenant is called.
-    monkeypatch.setattr(d, "make_zscaler_client", lambda cfg: SimulatedZscalerClient(str(tmp_path / "sim")))
+    # The client is the fake (installed by the fixture): no tenant is called.
     _create_pacs(tmp_path, "emea-proxy.pac", "na-proxy.pac")
     code, out = run(data, env_file=str(env_file))
     assert f"env ZSCALER_CLIENT_SECRET: set ({len(SECRETS['ZSCALER_CLIENT_SECRET'])} chars)" in out

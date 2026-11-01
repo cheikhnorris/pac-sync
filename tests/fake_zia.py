@@ -1,11 +1,11 @@
-"""Simulated ZIA tenant for demos and tests: same surface as the SDK's `client.zia.pac_files` and `client.zia.activate`.
+"""Test-only fake of a ZIA tenant: same surface as the SDK's `client.zia.pac_files` and `client.zia.activate`.
 
-`zscaler.target: simulated` makes `make_zscaler_client` return a SimulatedZscalerClient, so the real ZiaDeployer
+Tests inject it by monkeypatching `make_zscaler_client` (see `install_fake_zia`), so the real ZiaDeployer
 logic (unstage, clone, deploy, LKG, eviction, bootstrap) runs without a tenant. State lives in
 `<state_dir>/pacfiles.json`; every version is also written to `<state_dir>/<folder>/v<N>.pac` and the deployed one
-to `<state_dir>/<folder>/deployed.pac`, so the demo can open the file ZIA would serve. `<folder>` is the PAC file
-name when that is a plain lower-case file name (`emea-proxy.pac`, `demo-na-proxy.pac`), else the sanitized name plus
-a hash of the exact name, so two names can never share a folder (see `safe_dir_name`).
+to `<state_dir>/<folder>/deployed.pac`. `<folder>` is the PAC file name when that is a plain lower-case file name
+(`emea-proxy.pac`, `demo-na-proxy.pac`), else the sanitized name plus a hash of the exact name, so two names can
+never share a folder (see `safe_dir_name`).
 
 Semantics (copied from the fake in tests/test_deployer_sdk.py and the SDK docs, not verified against a tenant):
 - at most 10 versions per PAC file; a clone at the cap deletes `delete_version` when given, else the LOWEST version
@@ -15,7 +15,7 @@ Semantics (copied from the fake in tests/test_deployer_sdk.py and the SDK docs, 
 - version objects carry the SDK field names `last_modified_time` (epoch seconds), `create_time`, `last_modified_by`;
 - `activate.status()` is PENDING after any write that was not activated, or when `foreign_pending` is set in
   pacfiles.json (test hook standing for another admin's unactivated change); `activate()` clears both;
-- with `strict_commit` (`zscaler.simulated.strict_commit: true`) a clone on a PAC file created since the last
+- with `strict_commit` (`strict_commit=True`) a clone on a PAC file created since the last
   activation fails like the SDK documents (400 RESOURCE_NOT_FOUND until the parent is committed).
 Every call returns the SDK's (value, response, error) tuple.
 """
@@ -356,3 +356,16 @@ class SimulatedZscalerClient:
         return [{**{k: f[k] for k in _FILE_FIELDS}, "versions": [{k: v[k] for k in v if k != "pac_content"}
                                                                for v in f["versions"]]}
                 for f in state["files"].values()]
+
+
+def install_fake_zia(monkeypatch, state_dir, strict_commit=False):
+    """Make main and doctor build this fake instead of an SDK client; keeps the real factory's prefix validation."""
+    from pac_sync import doctor, main
+    from pac_sync.deployer import validate_prefix_config
+
+    def factory(zcfg):
+        validate_prefix_config(zcfg)
+        return SimulatedZscalerClient(str(state_dir), strict_commit)
+
+    monkeypatch.setattr(main, "make_zscaler_client", factory)
+    monkeypatch.setattr(doctor, "make_zscaler_client", factory)

@@ -1,27 +1,30 @@
-"""Shared builders for the Phase 1b tests: a demo-like config on the simulated tenant, file source, tmp paths."""
+"""Shared builders for the Phase 1b tests: a demo-like config on the fake ZIA tenant, file source, tmp paths."""
 
 import json
 
 import yaml
 
 from pac_sync import main as m
-from pac_sync.simzia import SimulatedZscalerClient
 from pac_sync.snow_client import make_source as real_make_source
 
 from .conftest import ROOT
+from .fake_zia import SimulatedZscalerClient, install_fake_zia
 
 SEED_MESSAGE = "PAC Sync 20260101T000000Z seed sha256:000000000000"
 PAC = 'function FindProxyForURL(url, host) { return "DIRECT"; }\n'
 
 
 def demo_cfg(tmp_path, monkeypatch, history="zia", **zia):
-    """config.demo.yaml with a file source and the simulated tenant (strict_commit on): prefix demo-, guard ON,
+    """config.demo.yaml with a file source and the fake tenant (strict_commit on): prefix demo-, guard ON,
     bootstrap missing, skip_activate_if_pending ON, EMEA auto / NA stage / APAC auto."""
     monkeypatch.chdir(ROOT)
     cfg = yaml.safe_load((ROOT / "config" / "config.demo.yaml").read_text(encoding="utf-8"))
     cfg["servicenow"].update(source="file", sample_file=str(ROOT / "config" / "servicenow_sample_data.json"))
-    cfg["zscaler"].update(simulated={"state_dir": str(tmp_path / "sim"), "strict_commit": True}, **zia)
-    cfg["zscaler"]["target"] = "simulated"
+    cfg["zscaler"].update(**zia)
+    cfg["_sim"] = (str(tmp_path / "sim"), True)
+    install_fake_zia(monkeypatch, tmp_path / "sim", strict_commit=True)
+    for k, v in {"ZSCALER_CLIENT_ID": "id", "ZSCALER_CLIENT_SECRET": "secret", "ZSCALER_VANITY_DOMAIN": "acme"}.items():
+        monkeypatch.setenv(k, v)
     cfg["history"] = ({"mode": "zia", "state_file": str(tmp_path / "pac-state.json"), "push": False}
                       if history == "zia" else
                       {"mode": history, "repo_path": str(tmp_path / "history"), "push": False})
@@ -38,8 +41,7 @@ def demo_cfg(tmp_path, monkeypatch, history="zia", **zia):
 
 
 def sim(cfg):
-    z = cfg["zscaler"]["simulated"]
-    return SimulatedZscalerClient(z["state_dir"], bool(z.get("strict_commit")))
+    return SimulatedZscalerClient(*cfg["_sim"])
 
 
 def add_rule(cfg, tmp_path, value, regions="reg-emea", number="PACR0009001", sys_id="rnew"):
@@ -56,7 +58,7 @@ def add_rule(cfg, tmp_path, value, regions="reg-emea", number="PACR0009001", sys
 
 
 def pac_file(client, name):
-    """The simulated PAC file summary by name (versions without content)."""
+    """The fake tenant's PAC file summary by name (versions without content)."""
     return next(f for f in client.pac_files_summary() if f["name"] == name)
 
 

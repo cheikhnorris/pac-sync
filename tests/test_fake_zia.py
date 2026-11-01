@@ -1,9 +1,9 @@
-"""Simulated ZIA: SDK-shaped state machine, persisted on disk, driven through the real ZiaDeployer."""
+"""Fake ZIA (tests/fake_zia.py): SDK-shaped state machine, persisted on disk, driven through the real ZiaDeployer."""
 
 import json
 
 from pac_sync.deployer import ZiaDeployer
-from pac_sync.simzia import MAX_VERSIONS, SimulatedZscalerClient, safe_dir_name
+from .fake_zia import MAX_VERSIONS, SimulatedZscalerClient, safe_dir_name
 
 PAC = 'function FindProxyForURL(url, host) { return "DIRECT"; }\n'
 

@@ -12,7 +12,7 @@
     pac-sync bootstrap --region EMEA [--yes]                   create the region's PAC file in ZIA
     pac-sync demo-cleanup --yes                                delete the prefixed demo PAC files
     pac-sync doctor   [--write-probe --region EMEA]            read-only checks of config, credentials, ServiceNow, git, ZIA
-    pac-sync setup    [--profile mock|demo|custom]             write config/config.yaml and .env
+    pac-sync setup    [--profile demo|custom]                  write config/config.yaml and .env
 
 Global option --env-file loads credentials before the config is read (default: .env of the config's project, else
 .env in the current directory); the process environment wins.
@@ -89,12 +89,8 @@ def load_config(path: str) -> dict:
     return cfg
 
 
-def is_live(cfg: dict) -> bool:
-    return zscaler_target(cfg.get("zscaler") or {}) == "live"
-
-
 def live_max_mode(cfg: dict) -> Optional[str]:
-    """`deploy.live_max_mode`: the most a region may do when the ZIA target is live (absent = no cap)."""
+    """`deploy.live_max_mode`: the most a region may do (absent = no cap)."""
     cap = (cfg.get("deploy") or {}).get("live_max_mode")
     if cap and cap not in MODES:
         raise ValueError(f"deploy.live_max_mode: unknown mode '{cap}'")
@@ -106,8 +102,8 @@ def region_mode(cfg: dict, code: str) -> str:
     if mode not in MODES:
         raise ValueError(f"region {code}: unknown mode '{mode}'")
     cap = live_max_mode(cfg)
-    if cap and is_live(cfg) and MODE_RANK[mode] > MODE_RANK[cap]:
-        log.debug("region %s: mode %s capped to %s (deploy.live_max_mode, live ZIA target)", code, mode, cap)
+    if cap and MODE_RANK[mode] > MODE_RANK[cap]:
+        log.debug("region %s: mode %s capped to %s (deploy.live_max_mode)", code, mode, cap)
         return cap
     return mode
 
@@ -143,8 +139,8 @@ def auto_bootstrap_refusal(cfg: dict) -> Optional[str]:
     z = cfg.get("zscaler") or {}
     if z.get("only_prefixed") and z.get("pac_name_prefix"):
         return None
-    if is_live(cfg) and live_max_mode(cfg) in ("stage", "paused"):
-        return f"deploy.live_max_mode is {live_max_mode(cfg)} on a live ZIA target"
+    if live_max_mode(cfg) in ("stage", "paused"):
+        return f"deploy.live_max_mode is {live_max_mode(cfg)}"
     return None
 
 
@@ -769,9 +765,8 @@ def resume(cfg: dict, code: str) -> int:
 def status(cfg: dict, out: Callable[[str], None] = print) -> int:
     """Print each region's recorded ZIA state. Offline for git / both; reads ZIA in zia mode."""
     with zia_session(cfg, need_zia=False, push=False) as (history, _deployer, _name_for):
-        target = zscaler_target(cfg.get("zscaler") or {})
         where = getattr(history, "state_file", None) or history.root
-        out(f"History {where} (mode {history_mode(cfg)}, ZIA target: {target})")
+        out(f"History {where} (mode {history_mode(cfg)})")
         codes = history.codes()
         if not codes:
             out("No region recorded yet: run `pac-sync run` first.")
@@ -806,7 +801,7 @@ def bootstrap_region(cfg: dict, code: str, yes: bool = False, confirm: Callable[
     region, rules, content, digest = rendered
     zcfg = cfg.get("zscaler") or {}
     name = effective_pac_name(zcfg, region.zia_pac_name)
-    if is_live(cfg) and not yes:
+    if not yes:
         if not stdin_is_interactive():  # no console to ask: do not even show the prompt
             log.error("bootstrap of %s refused: live ZIA target needs --yes (stdin is not interactive)", code)
             return 2
@@ -905,7 +900,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_doc.add_argument("--write-probe", action="store_true", help="stage and unstage one prefixed PAC file (no activation)")
     p_doc.add_argument("--region")
     p_setup = sub.add_parser("setup", help="write config/config.yaml and .env")
-    p_setup.add_argument("--profile", choices=("mock", "demo", "custom"))
+    p_setup.add_argument("--profile", choices=("demo", "custom"))
     p_setup.add_argument("--non-interactive", action="store_true", help="use the profile defaults, ask nothing")
     p_setup.add_argument("--force", action="store_true", help="overwrite an existing config and .env keys")
     p_setup.add_argument("--config-out", help="config file to write (default: --config)")
@@ -936,6 +931,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     cfg = load_config(args.config)
     try:
         validate_prefix_config(cfg.get("zscaler") or {})
+        zscaler_target(cfg.get("zscaler") or {})
         if args.command == "run":
             return sync(cfg, dry_run=args.dry_run, force=args.force)
         if args.command == "promote":

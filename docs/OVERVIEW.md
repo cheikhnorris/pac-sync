@@ -17,7 +17,7 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
 | --- | --- |
 | **ServiceNow** (or the local mock `snow-mock`) | Catalog item "Request PAC exception", approval workflow, four tables: regions, proxy profiles, rules, deployments. Validation rules V1–V12 run on submit. |
 | **pac-sync** (Python service) | Reads approved rules, validates them again, renders one PAC file per region, deploys it to ZIA, and writes the status back to ServiceNow. Runs on a schedule or on demand. |
-| **Zscaler ZIA** (real tenant, or the built-in simulator) | Hosted PAC files with up to 10 versions each: STAGE, DEPLOYED, LKG (last known good). |
+| **Zscaler ZIA** (real tenant) | Hosted PAC files with up to 10 versions each: STAGE, DEPLOYED, LKG (last known good). |
 | **History** | The ZIA PAC versions themselves, plus a git repository (private GitHub `pac-history`) when configured. |
 
 ```
@@ -80,8 +80,8 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
 | Area | State |
 | --- | --- |
 | ServiceNow mock: catalog, approvals, tables, Table API with OAuth | Done |
-| pac-sync with the mock and the simulated ZIA: all commands | Done; 182 automated tests |
-| Full demo flow against the mock (bootstrap, run, promote, versions, diff, rollback, resume) | Rehearsed end to end on the demo profile (simulated tenant) |
+| pac-sync with the mock: all commands | Done |
+| Full demo flow against the mock (bootstrap, run, promote, versions, diff, rollback, resume) | Rehearsed end to end on the demo profile |
 | Real ZIA tenant | Built against the SDK source and checked call by call. **Not yet run against a tenant**: see below. |
 
 **To confirm on the first real-tenant run** (`pac-sync doctor --write-probe`, then a demo run on `demo-` files):

@@ -50,8 +50,7 @@ def check_python(ctx: Context) -> List[Check]:
 
         checks.append((OK, "zscaler-sdk-python", version("zscaler-sdk-python")))
     except Exception:
-        live = ctx.cfg is None or zscaler_target(ctx.cfg.get("zscaler") or {}) == "live"
-        checks.append((FAIL if live else WARN, "zscaler-sdk-python", "not installed (pip install -e .)"))
+        checks.append((FAIL, "zscaler-sdk-python", "not installed (pip install -e .)"))
     return checks
 
 
@@ -71,10 +70,9 @@ def check_config(ctx: Context) -> List[Check]:
     checks.append((OK if template.is_file() else FAIL, "template", str(template) + ("" if template.is_file() else " not found")))
     try:
         zcfg = cfg.get("zscaler") or {}
-        target = zscaler_target(zcfg)
+        zscaler_target(zcfg)
         cap = live_max_mode(cfg)
-        detail = f"target {target}" + (f", auth {zcfg.get('auth') or 'oneapi'}" if target == "live" else
-                                         f", state in {(zcfg.get('simulated') or {}).get('state_dir') or './sim-zia'}")
+        detail = f"auth {zcfg.get('auth') or 'oneapi'}"
         detail += f", bootstrap {bootstrap_mode(cfg)}" + (f", live_max_mode {cap}" if cap else "")
         refusal = auto_bootstrap_refusal(cfg)
         if bootstrap_mode(cfg) == "missing" and refusal:
@@ -94,8 +92,6 @@ def check_config(ctx: Context) -> List[Check]:
 
 
 def zia_env_names(zcfg: dict) -> List[str]:
-    if zscaler_target(zcfg) == "simulated":
-        return []
     if (zcfg.get("auth") or "oneapi") == "legacy":
         return [zcfg.get("username_env", "ZIA_USERNAME"), zcfg.get("password_env", "ZIA_PASSWORD"),
                 zcfg.get("api_key_env", "ZIA_API_KEY"), zcfg.get("legacy_cloud_env", "ZIA_CLOUD")]
@@ -130,7 +126,7 @@ def check_env(ctx: Context) -> List[Check]:
         checks.append((OK if state != "not set" else FAIL, f"env {name or '(unnamed)'}",
                        f"{state} [{why}]" + ("" if state != "not set" else "; set it in .env or run `pac-sync setup`")))
     if not names:
-        checks.append((OK, "env", "no credentials needed (file source, simulated ZIA)"))
+        checks.append((OK, "env", "no credentials needed (file source)"))
     return checks
 
 
@@ -189,7 +185,7 @@ def check_servicenow(ctx: Context) -> List[Check]:
 def check_names(ctx: Context) -> List[Check]:
     """Effective PAC names (prefix + u_zia_pac_name) and the state of the prefix guard."""
     z = ctx.cfg.get("zscaler") or {}
-    if ctx.source_data is None or zscaler_target(z) == "simulated" and not z.get("pac_name_prefix"):
+    if ctx.source_data is None:
         return []
     prefix = z.get("pac_name_prefix") or ""
     guard = "ON, writes only touch prefixed files" if z.get("only_prefixed") and prefix else \
@@ -269,7 +265,7 @@ def check_zia(ctx: Context) -> List[Check]:
         return [(OK, "zia", "not used: every region is paused")]
     zcfg = cfg.get("zscaler") or {}
     checks: List[Check] = []
-    if (zcfg.get("auth") or "oneapi") == "legacy" and zscaler_target(zcfg) == "live" and skip_activate_if_pending(cfg):
+    if (zcfg.get("auth") or "oneapi") == "legacy" and skip_activate_if_pending(cfg):
         checks.append((WARN, "zia legacy", "auth: legacy and skip_activate_if_pending: ending a ZIA session activates "
                                            "pending changes; PAC Sync then leaves the session to expire, which ZIA is not "
                                            "documented to treat differently: use OneAPI for the demo"))

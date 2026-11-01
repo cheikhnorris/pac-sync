@@ -24,10 +24,7 @@ servicenow:
 
 zscaler:
   # live      = real tenant through zscaler-sdk-python (absent = live)
-  # simulated = local stand-in for ZIA (pac_sync/simzia.py), for demos and tests; no tenant is called
   target: live
-  # simulated:
-  #   state_dir: ./sim-zia         # simulated target only
   # oneapi = OneAPI / ZIdentity (default) | legacy = ZIA API key + admin user (tenants not migrated to ZIdentity)
   auth: oneapi
   # OneAPI (ZIdentity) credentials, see zscaler-sdk-python README
