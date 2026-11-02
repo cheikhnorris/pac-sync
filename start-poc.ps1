@@ -16,6 +16,7 @@
   .\start-poc.cmd
   .\start-poc.cmd -Config config\config.demo.local.yaml -NoBrowser
   .\start-poc.cmd -Reset        # fresh demo: mock database and the demo state file are deleted
+  .\start-poc.cmd -Offline      # no internet for Python: install from the wheels\ folder (Python 3.11, 64-bit Windows)
 #>
 param(
     [string]$Config = "config\config.yaml",
@@ -23,6 +24,7 @@ param(
     [switch]$Reset,
     [switch]$NoBrowser,
     [switch]$SkipSync,
+    [switch]$Offline,
     [string]$MockPath = (Join-Path $PSScriptRoot "..\snow-mock"),
     [string]$SdkPath = (Join-Path $PSScriptRoot "..\zscaler-sdk-python")
 )
@@ -89,22 +91,30 @@ if (Test-Path $venvPy) {
 
 # 3. Dependencies (skipped when pyproject.toml and the SDK source did not change) -------------------------------
 $useLocalSdk = Test-Path (Join-Path $SdkPath "pyproject.toml")
-$sdkSource = if ($useLocalSdk) { "editable:" + (Resolve-Path $SdkPath).Path } else { "pypi:zscaler-sdk-python>=1.11,<2" }
+$wheels = Join-Path $PSScriptRoot "wheels"
+if ($Offline -and -not (Test-Path $wheels)) { Fail "-Offline needs the wheels folder ($wheels)" "copy it from the pac-sync repo" }
+$sdkSource = if ($Offline) { "offline:wheels" } elseif ($useLocalSdk) { "editable:" + (Resolve-Path $SdkPath).Path } else { "pypi:zscaler-sdk-python>=1.11,<2" }
 $stampFile = Join-Path $PSScriptRoot ".venv\.install-stamp"
 $stamp = (Get-FileHash (Join-Path $PSScriptRoot "pyproject.toml") -Algorithm SHA256).Hash + "|" + $sdkSource
 if ((Test-Path $stampFile) -and ((Get-Content $stampFile -Raw).Trim() -eq $stamp)) {
     Step "Dependencies up to date"
 } else {
     Step "Installing dependencies ($sdkSource)"
-    $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "--upgrade", "pip")
-    if ($useLocalSdk) {
-        $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "-e", (Resolve-Path $SdkPath).Path)
+    if ($Offline) {
+        # --no-index: never reach PyPI; the SDK, its dependencies and the build tools all come from the wheels folder
+        $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "--no-index", "--find-links", $wheels, "-e", ".[dev]")
+        if ($rc -ne 0) { Fail "offline install from the wheels folder failed" "the wheels are built for Python 3.11 64-bit: delete .venv, install Python 3.11, run start-poc -Offline again" }
     } else {
-        $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "zscaler-sdk-python>=1.11,<2")
+        $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "--upgrade", "pip")
+        if ($useLocalSdk) {
+            $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "-e", (Resolve-Path $SdkPath).Path)
+        } else {
+            $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "zscaler-sdk-python>=1.11,<2")
+        }
+        if ($rc -ne 0) { Fail "installing zscaler-sdk-python failed" "check the network / proxy, then run start-poc again (or start-poc -Offline when Python cannot reach the internet)" }
+        $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "-e", ".[dev]")
+        if ($rc -ne 0) { Fail "installing pac-sync failed" "see the pip output above" }
     }
-    if ($rc -ne 0) { Fail "installing zscaler-sdk-python failed" "check the network / proxy, then run start-poc again" }
-    $rc = Invoke-Native $venvPy @("-m", "pip", "install", "-q", "-e", ".[dev]")
-    if ($rc -ne 0) { Fail "installing pac-sync failed" "see the pip output above" }
     Set-Content -Path $stampFile -Value $stamp -Encoding ascii
 }
 

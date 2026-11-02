@@ -89,7 +89,12 @@ Needs git, Python 3.10 - 3.12 and PHP 8.4 (the launcher offers `winget install P
 .\start-poc.cmd                                           # uses config\config.yaml; creates it from the demo profile if missing
 .\start-poc.cmd -Config config\config.demo.local.yaml     # another config file
 .\start-poc.cmd -Reset                                    # fresh demo: mock database and the demo state file deleted
+.\start-poc.cmd -Offline                                  # Python cannot reach the internet: install from wheels\
 ```
+
+`-Offline` installs the SDK, every dependency and pytest from the committed `wheels\` folder with `pip --no-index`.
+Those wheels are for Python 3.11, 64-bit Windows. Rebuild them on a machine with internet (same Python version) with
+`python -m pip wheel -w wheels ..\zscaler-sdk-python "requests>=2.31" "jinja2>=3.1" "pyyaml>=6.0" "pytest>=8" setuptools wheel`.
 
 It checks the prerequisites, creates `.venv`, installs the SDK (editable from `..\zscaler-sdk-python` when present,
 else from PyPI) and pac-sync, writes `config\config.yaml` + `.env` with `pac-sync setup --profile demo` when there is
