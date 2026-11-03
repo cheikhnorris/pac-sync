@@ -1,4 +1,7 @@
-# PAC Sync
+# ZIA Policy Sync (PAC Sync)
+
+Repository `zia-policy-sync`: ServiceNow-approved changes to Zscaler ZIA policy: PAC files, and optionally URL filtering
+and traffic forwarding (see the "Use cases" sections). The Python package and the command keep the name `pac-sync`.
 
 **PAC exceptions as an approved, versioned, reversible workflow.** Users request a PAC exception in ServiceNow.
 Once it is approved, PAC Sync rebuilds that region's PAC file and deploys it to Zscaler ZIA as a new PAC version,

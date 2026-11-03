@@ -33,7 +33,7 @@ Both repositories are private, so sign in to GitHub first (a browser window open
 ```powershell
 gh auth login --web
 mkdir C:\pac-demo; cd C:\pac-demo
-gh repo clone cheikhnorris/pac-sync
+gh repo clone cheikhnorris/zia-policy-sync pac-sync   # keep the folder name pac-sync
 gh repo clone cheikhnorris/snow-mock
 ```
 
