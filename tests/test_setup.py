@@ -1,5 +1,6 @@
 """setup wizard: profiles, no overwrite without --force, secrets only in .env."""
 
+import pytest
 import yaml
 
 from pac_sync.envfile import parse_env_file
@@ -40,7 +41,7 @@ def test_custom_legacy_secrets_go_to_env_only(tmp_path):
         "4", "api-admin@acme.com", "zscalertwo", "acme.com",            # ZIA legacy: user, cloud, pac_domain
         "./pac-history", "y", "origin",                                 # history
     ])
-    secrets = iter(["snow-Secret-1", "zia-Password-2", "zia-ApiKey-3"])
+    secrets = iter(["snow-Secret-1", "zia-Password-2", "zia-ApiKey-3", ""])
     code, out = _run(tmp_path, profile="custom", ask=lambda prompt: next(answers), ask_secret=lambda prompt: next(secrets))
     assert code == 0
     text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
@@ -59,7 +60,7 @@ def test_demo_profile_with_injected_answers(tmp_path):
         "2", "client-1", "acme", "beta",   # ZIA: OneAPI secret, client id, vanity domain, cloud
         "acme-lab.com", "lab-",            # PAC domain, prefix
     ])
-    secrets = iter(["zia-Secret-XYZ"])
+    secrets = iter(["zia-Secret-XYZ", ""])
     code, out = _run(tmp_path, profile="demo", ask=lambda prompt: next(answers), ask_secret=lambda prompt: next(secrets))
     assert code == 0
     text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
@@ -81,3 +82,73 @@ def test_demo_profile_non_interactive_keeps_the_safe_defaults(tmp_path):
     assert _run(tmp_path, profile="demo", non_interactive=True)[0] == 0
     z = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["zscaler"]
     assert z["pac_name_prefix"] == "demo-" and z["only_prefixed"] is True and z["target"] == "live"
+
+
+PROXY = "http://alice:p%40ss@proxy.corp:8080"
+DEMO_ANSWERS = ["2", "client-1", "acme", "beta", "acme-lab.com", "lab-"]
+
+
+@pytest.fixture
+def clean_proxy_env(monkeypatch):
+    for var in ("NO_PROXY", "no_proxy", "HTTPS_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _demo(tmp_path, proxy, **kw):
+    answers, prompts = iter(DEMO_ANSWERS), []
+    secrets = iter(["zia-Secret-XYZ", proxy])
+
+    def secret(prompt):
+        prompts.append(prompt)
+        return next(secrets)
+    code, out = _run(tmp_path, profile="demo", ask=lambda prompt: next(answers), ask_secret=secret, **kw)
+    return code, out, prompts
+
+
+def test_proxy_prompt_writes_https_proxy_and_no_proxy(tmp_path, clean_proxy_env):
+    code, out, prompts = _demo(tmp_path, PROXY)
+    assert code == 0
+    env = parse_env_file(str(tmp_path / ".env"))
+    assert env["HTTPS_PROXY"] == PROXY and env["NO_PROXY"] == "localhost,127.0.0.1"
+    text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    for leak in ("alice", "p%40ss"):
+        assert leak not in text and leak not in out
+    assert "hidden" in prompts[-1] and "proxy" in prompts[-1]
+
+
+def test_proxy_empty_writes_nothing(tmp_path, clean_proxy_env):
+    assert _demo(tmp_path, "")[0] == 0
+    env = parse_env_file(str(tmp_path / ".env"))
+    assert "HTTPS_PROXY" not in env and "NO_PROXY" not in env
+
+
+def test_proxy_keeps_existing_no_proxy_even_with_force(tmp_path, clean_proxy_env):
+    (tmp_path / ".env").write_text("NO_PROXY=corp.local\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("# old\n", encoding="utf-8")
+    assert _demo(tmp_path, PROXY, force=True)[0] == 0
+    env = parse_env_file(str(tmp_path / ".env"))
+    assert env["NO_PROXY"] == "corp.local" and env["HTTPS_PROXY"] == PROXY
+
+
+def test_proxy_no_proxy_from_process_env_not_duplicated(tmp_path, clean_proxy_env, monkeypatch):
+    monkeypatch.setenv("no_proxy", "corp.local")
+    assert _demo(tmp_path, PROXY)[0] == 0
+    env = parse_env_file(str(tmp_path / ".env"))
+    assert env["HTTPS_PROXY"] == PROXY and "NO_PROXY" not in env
+
+
+def test_existing_https_proxy_kept_without_force(tmp_path, clean_proxy_env):
+    (tmp_path / ".env").write_text("HTTPS_PROXY=http://old:1\n", encoding="utf-8")
+    code, out, _ = _demo(tmp_path, PROXY)
+    assert code == 0 and "kept existing HTTPS_PROXY" in out
+    assert parse_env_file(str(tmp_path / ".env"))["HTTPS_PROXY"] == "http://old:1"
+    (tmp_path / "config.yaml").unlink()
+    assert _demo(tmp_path, PROXY, force=True)[0] == 0
+    assert parse_env_file(str(tmp_path / ".env"))["HTTPS_PROXY"] == PROXY
+
+
+def test_non_interactive_never_prompts_for_proxy(tmp_path, clean_proxy_env):
+    def fail(prompt):
+        pytest.fail("prompted")
+    code, _ = _run(tmp_path, profile="demo", non_interactive=True, ask=fail, ask_secret=fail)
+    assert code == 0 and "HTTPS_PROXY" not in parse_env_file(str(tmp_path / ".env"))

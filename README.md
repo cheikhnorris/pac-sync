@@ -187,8 +187,18 @@ spaces or `#`; inside double quotes only `\\ \" \n \r \t` are escapes, so put a 
 | --- | --- |
 | `SNOW_CLIENT_ID`, `SNOW_CLIENT_SECRET` | ServiceNow OAuth client credentials (or `SNOW_USERNAME` / `SNOW_PASSWORD` with `auth: basic`) |
 | `ZSCALER_CLIENT_ID`, `ZSCALER_CLIENT_SECRET`, `ZSCALER_VANITY_DOMAIN` | Zscaler OneAPI credentials with ZIA PAC file + activation permissions (see the auth table above for private key and legacy) |
+| `HTTPS_PROXY` | Optional corporate proxy, `http://[user:pass@]host:port` (percent-encode special characters in user and password). ZIA and other HTTPS calls go through it |
+| `NO_PROXY` | Always `localhost,127.0.0.1`; add the ServiceNow host to reach it directly |
+| `REQUESTS_CA_BUNDLE` | Optional PEM file when the proxy inspects TLS |
 | `PAC_SYNC_WEBHOOK_URL` | Optional Teams / Slack incoming webhook |
 | `PAC_SYNC_CONFIG` | Optional path to the config file |
+
+**Proxy.** `HTTPS_PROXY` works for OneAPI (token and API calls) and legacy auth, and also applies to ServiceNow HTTPS
+and the webhook. `pac-sync setup` can write `HTTPS_PROXY` / `NO_PROXY`; `pac-sync doctor` shows the proxy with credentials
+masked. Don't set `HTTP_PROXY` / `ALL_PROXY` unless `NO_PROXY` covers the local mock. Only basic proxy authentication is
+supported (an NTLM/Kerberos-only proxy answers 407: use a local relay such as px or cntlm). The CA bundle must hold the
+public roots too: concatenate certifi's `cacert.pem` (`python -m certifi` prints the path) with the corporate root. Git
+push uses git's own `http.proxy`.
 
 **Bootstrap, once per region:** the PAC file named in `u_pac_region.u_zia_pac_name` must exist in ZIA with a
 deployed version. Create it with `pac-sync bootstrap --region EMEA` (the current render becomes version 1,
@@ -271,6 +281,7 @@ regions/EMEA/state.json    pac_id, staged {version, hash, commit}, deployed {ver
 
 - **Linux cron:** `*/15 * * * * cd /opt/pac-sync && .venv/bin/pac-sync run >> /var/log/pac-sync.log 2>&1`
 - **Windows Task Scheduler:** action `C:\pac-sync\.venv\Scripts\pac-sync.exe`, arguments `run`, start in `C:\pac-sync`, repeat every 15 minutes.
+  Step by step for a demo laptop (mock at logon, run every 5 minutes): [docs/SCHEDULING-WINDOWS.md](docs/SCHEDULING-WINDOWS.md).
 - **Kubernetes:** a `CronJob` with `concurrencyPolicy: Forbid`, the history repo cloned from its remote at start, `history.push: true`.
 - **Docker:** the image does one `pac-sync run` per start. Mount a folder at `/data` holding `config/config.yaml`
   and `.env`; the state file and the lock (`history.mode: zia`) land beside them. For `git` / `both`, set

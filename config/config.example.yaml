@@ -23,6 +23,7 @@ servicenow:
     deployment: u_pac_deployment
 
 zscaler:
+  # Proxy: no config key. Set HTTPS_PROXY / NO_PROXY / REQUESTS_CA_BUNDLE in .env (or run `pac-sync setup`).
   # live      = real tenant through zscaler-sdk-python (absent = live)
   target: live
   # oneapi = OneAPI / ZIdentity (default) | legacy = ZIA API key + admin user (tenants not migrated to ZIdentity)

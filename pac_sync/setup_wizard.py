@@ -6,6 +6,7 @@ Profiles:
             asks for the ZIA credentials (OneAPI recommended), the PAC domain and the prefix; history mode zia (no git).
     custom  starts from config/config.example.yaml (real ServiceNow, live ZIA).
 
+An optional hidden prompt writes HTTPS_PROXY (plus NO_PROXY=localhost,127.0.0.1 if none is set) to .env.
 Secrets are read with getpass and written only to the .env file (git-ignored); the config keeps env-var names.
 Nothing secret is printed. An existing config is never overwritten without --force; existing .env keys are kept
 unless --force.
@@ -14,6 +15,7 @@ unless --force.
 from __future__ import annotations
 
 import getpass
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -128,6 +130,15 @@ def _ask_servicenow(p: Prompter, s: dict, env: Dict[str, str]) -> None:
             env[s.setdefault("client_secret_env", "SNOW_CLIENT_SECRET")] = secret
 
 
+def _ask_proxy(p: Prompter, env: Dict[str, str], existing: Dict[str, str]) -> None:
+    proxy = p.secret("HTTPS proxy for ZIA, http://[user:pass@]host:port (special characters percent-encoded)")
+    if not proxy:
+        return
+    env["HTTPS_PROXY"] = proxy
+    if not (existing.get("NO_PROXY") or os.environ.get("NO_PROXY") or os.environ.get("no_proxy")):
+        env["NO_PROXY"] = "localhost,127.0.0.1"  # keeps the local ServiceNow mock off the proxy
+
+
 def run_setup(profile: Optional[str] = None, non_interactive: bool = False, force: bool = False,
               config_out: str = "config/config.yaml", env_out: str = ".env", doctor: bool = True,
               ask: Callable[[str], str] = input, ask_secret: Callable[[str], str] = getpass.getpass,
@@ -143,6 +154,7 @@ def run_setup(profile: Optional[str] = None, non_interactive: bool = False, forc
 
     cfg = yaml.safe_load(profile_path(profile).read_text(encoding="utf-8"))
     env: Dict[str, str] = dict(MOCK_ENV) if profile == "demo" else {}
+    existing = parse_env_file(str(env_path))
     if not non_interactive:
         if profile == "custom":
             _ask_servicenow(p, cfg["servicenow"], env)
@@ -153,6 +165,7 @@ def run_setup(profile: Optional[str] = None, non_interactive: bool = False, forc
             h["push"] = p.yes("Push the history to a git remote after each run?", bool(h.get("push")))
             if h["push"]:
                 h["remote"] = p.text("Remote name", h.get("remote") or "origin")
+        _ask_proxy(p, env, existing)
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     header = (f"# PAC Sync configuration written by `pac-sync setup` (profile {profile}, {stamp}).\n"
@@ -162,8 +175,7 @@ def run_setup(profile: Optional[str] = None, non_interactive: bool = False, forc
     config_path.write_text(header + yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False), encoding="utf-8")
     out(f"Wrote {config_path} (profile {profile}).")
 
-    existing = parse_env_file(str(env_path))
-    to_write = {k: v for k, v in env.items() if force or not existing.get(k)}
+    to_write = {k: v for k, v in env.items() if (force and (k != "NO_PROXY" or not existing.get(k))) or not existing.get(k)}
     kept: List[str] = sorted(k for k in env if k not in to_write)
     if to_write:
         write_env_file(str(env_path), to_write)

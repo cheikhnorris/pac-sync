@@ -301,3 +301,82 @@ def test_write_probe_for_a_missing_file_says_to_bootstrap(tmp_path, monkeypatch)
     cfg, client, run = _demo(tmp_path, monkeypatch)
     code, out = run(write_probe=True, region="EMEA")
     assert code == 1 and "run `pac-sync bootstrap --region EMEA` first" in out
+
+
+# -- proxy / CA bundle lines ---------------------------------------------------------------------------------------
+
+@pytest.fixture
+def proxy_env(monkeypatch):
+    """No proxy variables; the caller sets what it needs (a registry proxy on the machine is only read when none are set)."""
+    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+              "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.delenv(k, raising=False)
+    return monkeypatch
+
+
+def test_proxy_shown_masked_never_the_value(setup, proxy_env):
+    data, run, tmp_path = setup
+    _create_pacs(tmp_path, "emea-proxy.pac", "na-proxy.pac")
+    value = "http://alice:S3cr%2Ft@proxy.corp:8080"
+    proxy_env.setenv("HTTPS_PROXY", value)
+    proxy_env.setenv("NO_PROXY", "localhost,127.0.0.1")
+    code, out = run()
+    assert f"[ OK ] proxy zia: http://***@proxy.corp:8080 ({len(value)} chars), with credentials" in out
+    assert "alice" not in out and "S3cr" not in out
+    assert code == 0, out
+
+
+def test_proxy_malformed_credentials_warn_without_value(setup, proxy_env):
+    data, run, tmp_path = setup
+    proxy_env.setenv("HTTPS_PROXY", "http://alice:pa/ss@proxy.corp:8080")
+    _code, out = run()
+    assert "[WARN] proxy zia: set (" in out and "malformed" in out
+    assert "pa/ss" not in out and "alice" not in out
+
+
+def test_proxy_direct(setup, proxy_env):
+    data, run, tmp_path = setup
+    proxy_env.setattr("requests.utils.get_environ_proxies", lambda url, no_proxy=None: {})
+    _code, out = run()
+    assert "[ OK ] proxy zia: direct" in out
+
+
+def test_ca_bundle_missing_fails(setup, proxy_env):
+    data, run, tmp_path = setup
+    missing = str(tmp_path / "nope.pem")
+    proxy_env.setenv("REQUESTS_CA_BUNDLE", missing)
+    code, out = run()
+    assert f"[FAIL] ca bundle: {missing} not found" in out
+    assert code == 1
+
+
+def test_ca_bundle_present_ok(setup, proxy_env):
+    data, run, tmp_path = setup
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("x")
+    proxy_env.setenv("REQUESTS_CA_BUNDLE", str(bundle))
+    _code, out = run()
+    assert f"[ OK ] ca bundle: {bundle}" in out
+
+
+def test_no_ca_bundle_line_when_unset(setup, proxy_env):
+    data, run, tmp_path = setup
+    _code, out = run()
+    assert "ca bundle" not in out
+
+
+def test_proxy_servicenow_direct_via_no_proxy(proxy_env):
+    proxy_env.setenv("HTTPS_PROXY", "http://proxy.corp:8080")
+    proxy_env.setenv("HTTP_PROXY", "http://proxy.corp:8080")  # the mock is http://, so this is what NO_PROXY must beat
+    ctx = d.Context(config_path="", env_file="",
+                    cfg={"servicenow": {"source": "api", "instance_url": "http://127.0.0.1:8090"}})
+    checks = {label: text for _s, label, text in d.check_proxy(ctx)}
+    assert checks["proxy servicenow"].startswith("http://proxy.corp:8080")
+    proxy_env.setenv("NO_PROXY", "localhost,127.0.0.1")
+    checks = {label: text for _s, label, text in d.check_proxy(ctx)}
+    assert checks["proxy servicenow"] == "direct"
+    assert checks["proxy zia"].startswith("http://proxy.corp:8080")
+
+
+def test_describe_proxy_ipv6_host():
+    assert d._describe_proxy("http://[::1]:8080")[1].startswith("http://[::1]:8080 ")

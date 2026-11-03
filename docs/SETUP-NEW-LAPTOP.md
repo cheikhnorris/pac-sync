@@ -57,6 +57,22 @@ It never activates other admins' pending changes, and it pushes nothing to git.
 - **Pending changes.** The ZIA portal must show no pending changes before the demo. If it does, PAC Sync still saves
   its versions but won't activate them.
 
+### 3b. Behind a corporate proxy (optional)
+
+Add to `.env` (placeholders; percent-encode special characters in the user and password):
+
+```
+HTTPS_PROXY=http://user:password@proxy.example.com:8080
+NO_PROXY=localhost,127.0.0.1
+REQUESTS_CA_BUNDLE=C:\certs\bundle.pem
+```
+
+`REQUESTS_CA_BUNDLE` is only needed when the proxy inspects TLS. Find the proxy with `netsh winhttp show proxy`, with
+`ProxyServer` / `AutoConfigURL` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`, or ask IT.
+`start-poc` installs packages with pip, which reads the terminal's environment, not `.env`: in PowerShell run
+`$env:HTTPS_PROXY = "http://user:password@proxy.example.com:8080"` first (or use `.\start-poc.cmd -Offline`).
+A PAC/WPAD setup is not auto-discovered by Python. `pac-sync doctor` prints the proxy line (credentials masked).
+
 ### 4. Start everything
 
 ```powershell
@@ -68,7 +84,7 @@ The first start takes 2–3 minutes. In order, it:
 
 1. checks Python and PHP;
 2. creates `.venv` and installs pac-sync and the Zscaler SDK (from PyPI);
-3. writes `config\config.yaml` and `.env` from the demo profile (it asks for the ZIA values from step 3, typed hidden);
+3. writes `config\config.yaml` and `.env` from the demo profile (it asks for the ZIA values from step 3 and an optional HTTPS proxy, typed hidden);
 4. starts the ServiceNow mock at http://127.0.0.1:8090;
 5. runs `pac-sync doctor` and a first `pac-sync run`;
 6. opens the portal.
@@ -148,5 +164,9 @@ Then rotate or delete the API client secret in ZIdentity, and clear the ZIA valu
 | Run exits 1 with "not activated" | ZIA had pending changes. Review and activate them in the portal; the next run confirms. |
 | A region says "paused" | Someone changed the PAC file in the portal, or there was a rollback. Review it, then `pac-sync resume --region X`. |
 | Doctor FAIL on a ZIA permission | The API client's role is missing Hosted PAC Files or activation rights. |
+| `WinError 10013` or `ProxyError` | Set `HTTPS_PROXY` in `.env` (step 3b). If `python.exe` itself is blocked, ask IT. |
+| `407 Proxy Authentication Required` | Wrong proxy credentials, or an NTLM-only proxy (use a local relay such as px or cntlm). |
+| `CERTIFICATE_VERIFY_FAILED` | Set `REQUESTS_CA_BUNDLE` to a PEM with the public roots plus the corporate root. |
+| Go back to a direct connection | Delete the `HTTPS_PROXY` line from `.env` (the wizard cannot remove it). |
 
 More detail is in the repository README: commands, configuration, safety, versioning.

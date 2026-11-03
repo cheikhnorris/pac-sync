@@ -1,7 +1,8 @@
 """`pac-sync doctor`: read-only checks of the whole chain, one OK / WARN / FAIL line each.
 
 Nothing here writes to ServiceNow, git or ZIA (validate_pac_file is a check-only POST). Secret values are never
-printed: environment variables are reported as "set (N chars)" or "not set". Exit 0 when no check FAILs, else 1.
+printed: environment variables are reported as "set (N chars)" or "not set"; proxy values are shown with credentials
+masked. Exit 0 when no check FAILs, else 1.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,6 +150,45 @@ def check_env_file(ctx: Context) -> List[Check]:
     if ignored.returncode != 0:
         return [(FAIL, "env file", f"{path} is not git-ignored: add it to .gitignore")]
     return [(OK, "env file", f"{path} present and git-ignored")]
+
+
+def _describe_proxy(value: Optional[str]) -> Tuple[str, str]:
+    """(status, text) for a proxy URL. Built only from scheme/host/port: the user, password and raw value are never shown."""
+    if not value:
+        return OK, "direct"
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+        malformed = parts.hostname is None or ("@" in value and "@" not in parts.netloc)
+    except ValueError:
+        malformed = True
+    if malformed:
+        return WARN, (f"set ({len(value)} chars), malformed: use http://host:port and percent-encode special "
+                      "characters in the credentials")
+    creds = "***@" if "@" in parts.netloc else ""
+    name = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    host = f"{creds}{name}" + (f":{port}" if port else "")
+    return OK, f"{parts.scheme}://{host} ({len(value)} chars)" + (", with credentials" if creds else "")
+
+
+def check_proxy(ctx: Context) -> List[Check]:
+    import requests  # lazy, like check_servicenow
+
+    def lookup(url: str) -> Optional[str]:
+        proxies = requests.utils.get_environ_proxies(url)
+        return proxies.get(urlsplit(url).scheme) or proxies.get("all")
+
+    status, text = _describe_proxy(lookup("https://api.zsapi.net"))
+    checks: List[Check] = [(status, "proxy zia", text)]
+    snow = ctx.cfg.get("servicenow") or {}
+    if snow.get("source") != "file" and snow.get("instance_url"):
+        status, text = _describe_proxy(lookup(snow["instance_url"]))
+        checks.append((status, "proxy servicenow", text))
+    bundle = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("CURL_CA_BUNDLE")
+    if bundle:
+        found = Path(bundle).is_file()
+        checks.append((OK if found else FAIL, "ca bundle", bundle if found else f"{bundle} not found"))
+    return checks
 
 
 def check_servicenow(ctx: Context) -> List[Check]:
@@ -438,7 +479,7 @@ def run_doctor(config_path: str, env_file: str = ".env", out: Callable[[str], No
     emit(check_config(ctx))
     emit(check_python(ctx))
     if ctx.cfg is not None:
-        checks = [check_env, check_env_file, check_servicenow, check_names, check_history, check_zia]
+        checks = [check_env, check_proxy, check_env_file, check_servicenow, check_names, check_history, check_zia]
         if write_probe:
             checks.append(check_probe if region else
                           (lambda c: [(FAIL, "write probe", "--write-probe needs --region X")]))
