@@ -61,6 +61,13 @@ Today, changing a PAC file is a manual edit in the ZIA portal. With PAC Sync:
   one.
 - **Optional git history** (`history.mode: git` or `both`) keeps every rendered file and a tag per deployed version.
 
+## Use cases beyond PAC files
+
+URL filtering (optional, off by default): approved `u_url_rule` entries are grouped by their `u_url_category` and become one
+prefixed custom ZIA URL category plus one URL filtering rule per category (allow / caution / block). It reuses the PAC
+safety model (prefix guard, activation guard, drift detection, guardrails, dry-run, write-back) with the ZIA object
+descriptions as the ownership marker instead of versions. Traffic forwarding (optional) works the same way: a `u_fwd_profile` (direct or through a proxy gateway) becomes one prefixed forwarding control rule whose destinations are the approved `u_fwd_rule` entries.
+
 ## Safety controls
 
 | Risk | Control |

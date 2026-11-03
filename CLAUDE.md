@@ -28,7 +28,10 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
 | `zia_messages.py` | ZIA version commit message `PAC Sync <run-id> <CODE> +/-PACR sha256 git` (build, parse, 255 limit) |
 | `zia_cli.py` | `versions`, `diff`, `lkg`, `demo-cleanup` |
 | `deployer.py` | ZIA client factory (OneAPI / legacy), prefix guard, `pac_files` stage (explicit `delete_version`) / deploy / LKG / bootstrap / delete, version cache, `activate` |
-| `writeback.py` | ServiceNow `u_pac_rule` status updates |
+| `writeback.py` | ServiceNow `u_pac_rule` status updates (also reused by the use cases) |
+| `zia_objects.py` | Shared engine of the ZIA use cases (read, validate, plan, drift, guardrails, apply, write-back; `use_cases.state_file`) |
+| `url_filtering.py` | URL filtering use case: `u_url_category` -> custom URL category + URL filtering rule (`UrlFilteringApi`) |
+| `forwarding.py` | Traffic forwarding use case: `u_fwd_profile` -> forwarding control rule (`ForwardingApi`, proxy gateway read-only; needs `auth: oneapi`) |
 | `main.py` | Orchestration, guardrails, drift check, activation guard, lock, CLI |
 | `envfile.py` | `.env` loading/writing, `ConfigError`, `require_env` (names the variable, never the value) |
 | `doctor.py` | Read-only connectivity and configuration checks (`pac-sync doctor`) |
@@ -52,6 +55,7 @@ Python service: ServiceNow PAC rules -> validated, per-region PAC files -> git h
   New write paths must call it. Effective name = prefix + `u_zia_pac_name`.
 - **Activation guard:** with `deploy.skip_activate_if_pending`, `activate.status()` is read before the first write; if not ACTIVE nothing
   is activated (other admins' pending changes would go live too), the run exits 1 and says "not activated" everywhere.
+- **Use cases** (`use_cases.*`, off by default): need `only_prefixed` + prefix (ConfigError at start-up). Every write goes through `deployer.assert_prefixed` on the name ZIA returned; foreign prefixed objects (description not a PAC Sync message) are never modified, even with `--force`; drift = description sha256 differs from the hash of what ZIA returns (pause until `resume --use-case` / `run --force`). Names: `validate_object_name` / `validate_url_entry` have PHP twins (`zia_validate_object_name`, `url_validate_entry`), `validate_gateway_name` has `fwd_validate_gateway`; all covered by `tests/test_validation_parity.py`.
 - **Drift:** a DEPLOYED version whose message is not PAC Sync's (or, in git modes, is not the recorded one) pauses the region
   ("manual change in ZIA") until `resume` or `run --force`.
 - **Safety:** guardrails (removed-rules ratio, zero rules abort), one region failing never stops the others, run lock.

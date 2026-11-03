@@ -4,7 +4,7 @@
     pac-sync render   --region EMEA                            print the PAC, no side effects
     pac-sync promote  --region EMEA                            deploy the reviewed STAGE version
     pac-sync rollback --region EMEA (--version 41 | --to lkg)  redeploy an older ZIA version, pause the region
-    pac-sync resume   --region EMEA                            clear a pause (rollback, manual change in ZIA)
+    pac-sync resume   --region EMEA | --use-case url_filtering  clear a pause (rollback, manual change in ZIA)
     pac-sync status                                            each region's recorded ZIA state
     pac-sync versions --region EMEA                            the ZIA versions of the region's PAC file
     pac-sync diff     --region EMEA --from deployed --to render   unified diff of two versions
@@ -44,6 +44,8 @@ from .normalizer import NormalizeResult, normalize
 from .renderer import PacRenderer
 from .snow_client import make_source
 from .writeback import NOT_ACTIVATED, compute_rule_updates
+from .zia_objects import (KEYS as USE_CASE_KEYS, enabled_keys, resume_use_case, run_use_cases, status_lines,
+                          validate_use_case_config)
 from .zia_history import ZiaHistory
 from .zia_messages import build_message, parse_commit_message, run_id
 
@@ -86,6 +88,9 @@ def load_config(path: str) -> dict:
             value = hist.get(key) or default
             if value:
                 hist[key] = str(root / value) if not Path(value).is_absolute() else value
+    if isinstance((cfg or {}).get("use_cases"), dict):
+        value = cfg["use_cases"].get("state_file") or "pac-state-usecases.json"
+        cfg["use_cases"]["state_file"] = value if Path(value).is_absolute() else str(Path(path).resolve().parent.parent / value)
     return cfg
 
 
@@ -349,6 +354,11 @@ def sync(cfg: dict, dry_run: bool = False, force: bool = False, promote: Optiona
             if dry_run:
                 log.info("[dry-run] %s\n%s", message, history.diff_stat() or "no change")
                 history.discard()
+                if enabled_keys(cfg):  # reads ZIA, writes nothing
+                    if deployer is None:
+                        client = make_zscaler_client(cfg["zscaler"])
+                        deployer = make_deployer(cfg, client)
+                    run_use_cases(cfg, source, deployer, rid, now, dry_run=True, force=force)
                 return 0
 
             content_commit = history.commit(message) or history.head()
@@ -383,10 +393,20 @@ def sync(cfg: dict, dry_run: bool = False, force: bool = False, promote: Optiona
             wb_failed = _write_back(cfg, source, result, raw_rules, states, plans, content_commit, now,
                                     not_activated_regions)
 
+            uc_results = []
+            if enabled_keys(cfg) and not promote:  # after PAC: if PAC activated, ZIA is ACTIVE again
+                if deployer is None:
+                    client = make_zscaler_client(cfg["zscaler"])
+                    deployer = make_deployer(cfg, client)
+                uc_results = run_use_cases(cfg, source, deployer, rid, now, force=force)
+            uc_failed = any(r.failed for r in uc_results)
+            not_activated = not_activated or any(r.not_activated for r in uc_results)
+
             failures = [p for p in plans if p.error or p.blocked]
             changes = [p for p in plans if p.staged_now or p.deployed_now]
-            if failures or changes or result.rejected or push_error or not_activated or wb_failed:
+            if failures or changes or result.rejected or push_error or not_activated or wb_failed or uc_failed:
                 notify(cfg, "PAC Sync\n" + "\n".join(_summary(p) for p in plans)
+                       + "".join("\n" + r.summary() for r in uc_results if r.failed or r.done)
                        + (f"\nRejected rules: {len(result.rejected)}" if result.rejected else "")
                        + (f"\n{NOT_ACTIVATED}" if not_activated else "")
                        + (f"\nGit push failed: {push_error}" if push_error else "")
@@ -395,7 +415,7 @@ def sync(cfg: dict, dry_run: bool = False, force: bool = False, promote: Optiona
                 log.info(_summary(p))
             if not_activated:
                 log.warning(NOT_ACTIVATED)
-            return 1 if failures or push_error or not_activated or wb_failed else 0
+            return 1 if failures or push_error or not_activated or wb_failed or uc_failed else 0
     finally:
         close_zscaler_client(client)
 
@@ -762,11 +782,21 @@ def resume(cfg: dict, code: str) -> int:
     return 0
 
 
+def resume_use(cfg: dict, key: str) -> int:
+    """`resume --use-case`: clear the use case's pause and acknowledge the current ZIA state once."""
+    with zia_session(cfg, need_zia=False) as (history, _deployer, _name_for):
+        with run_lock(history.root):
+            resume_use_case(cfg, key)
+    return 0
+
+
 def status(cfg: dict, out: Callable[[str], None] = print) -> int:
-    """Print each region's recorded ZIA state. Offline for git / both; reads ZIA in zia mode."""
+    """Print each region's recorded ZIA state (and the enabled use cases'). Offline for git / both; reads ZIA in zia mode."""
     with zia_session(cfg, need_zia=False, push=False) as (history, _deployer, _name_for):
         where = getattr(history, "state_file", None) or history.root
         out(f"History {where} (mode {history_mode(cfg)})")
+        for line in status_lines(cfg):
+            out(line)
         codes = history.codes()
         if not codes:
             out("No region recorded yet: run `pac-sync run` first.")
@@ -876,8 +906,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_run = sub.add_parser("run")
     p_run.add_argument("--dry-run", action="store_true", help="render and diff only: no commit, no ZIA, no write-back")
     p_run.add_argument("--force", action="store_true", help="bypass the removed-rules guardrail and a manual-change pause")
-    for name in ("render", "promote", "resume"):
+    for name in ("render", "promote"):
         _add_region(sub, name)
+    p_rs = sub.add_parser("resume", help="clear a pause")
+    g_rs = p_rs.add_mutually_exclusive_group(required=True)
+    g_rs.add_argument("--region")
+    g_rs.add_argument("--use-case", choices=USE_CASE_KEYS)
     p_rb = _add_region(sub, "rollback")
     group = p_rb.add_mutually_exclusive_group(required=True)
     group.add_argument("--version", type=int)
@@ -932,6 +966,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         validate_prefix_config(cfg.get("zscaler") or {})
         zscaler_target(cfg.get("zscaler") or {})
+        validate_use_case_config(cfg)
         if args.command == "run":
             return sync(cfg, dry_run=args.dry_run, force=args.force)
         if args.command == "promote":
@@ -954,6 +989,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.command == "lkg":
                 return zia_cli.lkg(cfg, args.region, args.version, args.remove, args.new_lkg)
             return zia_cli.demo_cleanup(cfg, yes=args.yes)
+        if args.use_case:
+            return resume_use(cfg, args.use_case)
         return resume(cfg, args.region)
     except ConfigError as exc:
         log.error("configuration error: %s", exc)

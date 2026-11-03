@@ -108,6 +108,17 @@ def validate_prefix_config(zcfg: dict) -> None:
         raise ConfigError("zscaler.only_prefixed: true needs a non-empty zscaler.pac_name_prefix")
 
 
+def assert_prefixed(prefix: str, only_prefixed: bool, name: str, what: str = "PAC file") -> None:
+    """The prefix guard for any ZIA object: with only_prefixed on, a name lacking the prefix raises before any request."""
+    if not only_prefixed:
+        return
+    if not prefix:
+        raise ConfigError("zscaler.only_prefixed: true needs a non-empty zscaler.pac_name_prefix")
+    if not str(name).startswith(prefix):
+        raise ConfigError(f"refusing to write {what} '{name}': zscaler.only_prefixed is on and the name does not "
+                          f"start with '{prefix}'")
+
+
 def to_epoch(value) -> Optional[int]:
     """ZIA timestamps: epoch seconds or milliseconds (format unverified), or an ISO string. Return epoch seconds."""
     if value is None or value == "":
@@ -152,9 +163,7 @@ class ZiaDeployer:
             if name is None:  # never ask ZIA here: a refusal must not be preceded by a request
                 raise ConfigError(f"refusing to write PAC id {pac_id}: zscaler.only_prefixed is on and its name is not known, "
                                   "so the guard cannot check it (look it up by name first: find_pac_id)")
-        if not str(name).startswith(self.prefix):
-            raise ConfigError(f"refusing to write PAC file '{name}': zscaler.only_prefixed is on and the name does not "
-                              f"start with '{self.prefix}'")
+        assert_prefixed(self.prefix, self.only_prefixed, name)
 
     # -- reads ---------------------------------------------------------------------------------------------------
     def list_files(self) -> List:

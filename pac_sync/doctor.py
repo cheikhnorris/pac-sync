@@ -395,6 +395,69 @@ def check_zia(ctx: Context) -> List[Check]:
     return checks
 
 
+def check_use_cases(ctx: Context) -> List[Check]:
+    """URL filtering and forwarding: config, ServiceNow tables, managed ZIA objects, drift, foreign objects, names."""
+    from .main import make_deployer
+    from .snow_client import ServiceNowClient, make_source
+    from .zia_objects import (MAX_NAME, classify, enabled_keys, get_use_case, make_api, read_zia, use_case_config,
+                              validate_use_case_config)
+
+    cfg = ctx.cfg
+    keys = enabled_keys(cfg)
+    if not keys:
+        return []
+    try:
+        validate_use_case_config(cfg)
+    except Exception as exc:
+        return [(FAIL, "use cases config", str(exc))]
+    checks: List[Check] = [(OK, "use cases config", f"enabled: {', '.join(keys)}")]
+    snow = cfg.get("servicenow") or {}
+    source = make_source(snow)
+    prefix = (cfg.get("zscaler") or {}).get("pac_name_prefix") or ""
+    try:
+        client = make_zscaler_client(cfg.get("zscaler") or {})
+    except Exception as exc:
+        return checks + [(FAIL, "use cases zia client", str(exc))]
+    try:
+        deployer = make_deployer(cfg, client)
+        for key in keys:
+            spec = get_use_case(key)
+            if isinstance(source, ServiceNowClient):
+                for table_key in (spec.group_table, spec.entry_table):
+                    table = snow["tables"][table_key]
+                    try:
+                        source.probe(table)
+                        checks.append((OK, f"servicenow {table}", f"read OK ({snow['instance_url']})"))
+                    except Exception as exc:
+                        checks.append((FAIL, f"servicenow {table}", f"{snow.get('instance_url')}: {exc}"))
+            api = make_api(spec, deployer, use_case_config(cfg, key))
+            try:
+                groups = source.fetch_groups(spec.group_table, spec.group_fields)
+                for g in groups:
+                    name = g.get("u_name") or ""
+                    if len(prefix + name) > MAX_NAME:
+                        checks.append((FAIL, f"{key} name", f"'{prefix}{name}' is longer than {MAX_NAME} characters"))
+                if hasattr(api, "check"):  # forwarding: the proxy gateways must exist in ZIA
+                    checks += [(FAIL, f"{key} gateway", f"{label}: {why}") for label, why in api.check(groups)]
+            except Exception as exc:
+                checks.append((FAIL, f"{key} groups", str(exc)))
+            try:
+                zia = read_zia(api, prefix)
+            except Exception as exc:
+                checks.append((FAIL, f"zia {key}", str(exc)))
+                continue
+            foreign, drift = classify(zia)
+            checks.append((OK, f"zia {key}", f"{len(zia) - len(foreign)} managed group(s), "
+                                              f"{sum(len(zia[n].values) for n in zia if n not in foreign)} entries"))
+            checks += [(WARN, f"zia {key} drift", f"{why}: the next run pauses this use case until "
+                                                 f"`resume --use-case {key}` or `run --force`") for why in drift.values()]
+            checks += [(WARN, f"zia {key} foreign", f"{zia[n].name} has the prefix but was not created by PAC Sync: "
+                                                   "never modified or deleted") for n in sorted(foreign)]
+    finally:
+        close_zscaler_client(client)
+    return checks
+
+
 def _headroom_and_drift(deployer, recorded_state, code, pac_id, zia_mode, drift_reason) -> List[Check]:
     """WARN when the next stage cannot make room (>= 9 versions, none deletable) or someone changed ZIA by hand.
     ``recorded_state`` is the region's history state: a version accepted with `resume` (drift_accepted) is not drift."""
@@ -479,7 +542,7 @@ def run_doctor(config_path: str, env_file: str = ".env", out: Callable[[str], No
     emit(check_config(ctx))
     emit(check_python(ctx))
     if ctx.cfg is not None:
-        checks = [check_env, check_proxy, check_env_file, check_servicenow, check_names, check_history, check_zia]
+        checks = [check_env, check_proxy, check_env_file, check_servicenow, check_names, check_history, check_zia, check_use_cases]
         if write_probe:
             checks.append(check_probe if region else
                           (lambda c: [(FAIL, "write probe", "--write-probe needs --region X")]))

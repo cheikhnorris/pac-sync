@@ -128,10 +128,10 @@ if (-not (Test-Path $Config)) {
     Step "Using config $Config"
 }
 $ErrorActionPreference = "Continue"
-$settings = & $venvPy -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1], encoding='utf-8')); h = c['history']; z = c.get('zscaler') or {}; print(c['servicenow'].get('instance_url', '')); print(h.get('repo_path', '')); print(bool(h.get('push'))); print(h.get('mode') or 'git'); print(z.get('target') or 'live'); print(h.get('state_file') or './pac-state.json'); print(z.get('pac_name_prefix') or '')" $Config 2>$null
+$settings = & $venvPy -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1], encoding='utf-8')); h = c['history']; z = c.get('zscaler') or {}; print(c['servicenow'].get('instance_url', '')); print(h.get('repo_path', '')); print(bool(h.get('push'))); print(h.get('mode') or 'git'); print(z.get('target') or 'live'); print(h.get('state_file') or './pac-state.json'); print(z.get('pac_name_prefix') or ''); print((c.get('use_cases') or {}).get('state_file') or './pac-state-usecases.json')" $Config 2>$null
 $ErrorActionPreference = "Stop"
-if (-not $settings -or $settings.Count -lt 7) { Fail "cannot read $Config" "run .venv\Scripts\pac-sync --config $Config doctor for details" }
-$instanceUrl, $repoPath, $push, $histMode, $zTarget, $stateFile, $prefix = $settings[0], $settings[1], $settings[2], $settings[3], $settings[4], $settings[5], $settings[6]
+if (-not $settings -or $settings.Count -lt 8) { Fail "cannot read $Config" "run .venv\Scripts\pac-sync --config $Config doctor for details" }
+$instanceUrl, $repoPath, $push, $histMode, $zTarget, $stateFile, $prefix, $ucStateFile = $settings[0], $settings[1], $settings[2], $settings[3], $settings[4], $settings[5], $settings[6], $settings[7]
 $usesMock = $instanceUrl -match '^https?://(127\.0\.0\.1|localhost)(:|/|$)'
 Info "ServiceNow $instanceUrl, ZIA $zTarget, history $histMode ($repoPath), push $push"
 if ($Profile -eq "demo" -and ($zTarget -ne "live" -or -not $prefix)) { Fail "$Config is not a demo config (needs zscaler.target: live and a zscaler.pac_name_prefix)" "create one: .venv\Scripts\pac-sync --config config\config.demo.local.yaml setup --profile demo, then start-poc -Config config\config.demo.local.yaml" }
@@ -162,6 +162,12 @@ if ($Reset) {
             Refuse "history.state_file '$stateFile' is not a pac-state*.json file inside the project"
         }
         $planned += $full
+        # The use-case state file (URL filtering): same in-project / pac-state*.json check.
+        $ucFull = Resolve-InProject $ucStateFile
+        if (-not $ucFull -or (Split-Path $ucFull -Leaf) -notmatch '^pac-state[A-Za-z0-9._-]*\.json$') {
+            Refuse "use_cases.state_file '$ucStateFile' is not a pac-state*.json file inside the project"
+        }
+        $planned += $ucFull
     } else {
         Refuse "$Config does not use history.mode: zia: state.json would keep PAC ids this reset cannot delete"
     }

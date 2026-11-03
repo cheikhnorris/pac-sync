@@ -18,5 +18,33 @@
     {"sys_id": "r1052", "number": "PACR0001052", "u_action": "direct", "u_match_type": "domain_suffix", "u_value": "legacy-app.example.com", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "500", "u_state": "retire_requested", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "deployed", "u_deploy_version": ""},
     {"sys_id": "r1060", "number": "PACR0001060", "u_action": "direct", "u_match_type": "host_exact", "u_value": "https://bad-entry.example.com", "u_proxy_profile": "", "u_scope": "global", "u_regions": "", "u_priority": "500", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
     {"sys_id": "r1061", "number": "PACR0001061", "u_action": "proxy", "u_match_type": "domain_suffix", "u_value": "corp.local", "u_proxy_profile": "prof-zs-default", "u_scope": "regional", "u_regions": "reg-emea", "u_priority": "600", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""}
+  ],
+  "u_url_category": [
+    {"sys_id": "cat-partner", "u_name": "partner-sites", "u_action": "allow", "u_description": "Approved partner sites", "u_active": "true"},
+    {"sys_id": "cat-risky", "u_name": "risky-tools", "u_action": "block", "u_description": "Blocked file-sharing tools", "u_active": "true"},
+    {"sys_id": "cat-review", "u_name": "review-sites", "u_action": "caution", "u_description": "Warn on review sites", "u_active": "true"}
+  ],
+  "u_url_rule": [
+    {"sys_id": "u2001", "number": "URLR0001001", "u_category": "cat-partner", "u_value": ".partner-example.com", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2002", "number": "URLR0001002", "u_category": "cat-partner", "u_value": "tools.example.net/upload", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2003", "number": "URLR0001003", "u_category": "cat-risky", "u_value": "files.risky-example.org", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2004", "number": "URLR0001004", "u_category": "cat-review", "u_value": "reviews.example.com/products", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2005", "number": "URLR0001005", "u_category": "cat-review", "u_value": "old-reviews.example.com", "u_state": "retire_requested", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2006", "number": "URLR0001006", "u_category": "cat-partner", "u_value": "expired-partner.example.com", "u_state": "deployed", "u_valid_from": "", "u_valid_to": "2020-01-01 00:00:00", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2007", "number": "URLR0001007", "u_category": "cat-risky", "u_value": "bad value.example.com", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "u2008", "number": "URLR0001008", "u_category": "cat-risky", "u_value": ".partner-example.com", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""}
+  ],
+  "u_fwd_profile": [
+    {"sys_id": "fp-direct", "u_name": "partner-direct", "u_forward_method": "direct", "u_proxy_gateway": "", "u_description": "Partner traffic bypasses the proxy chain", "u_active": "true"},
+    {"sys_id": "fp-egress", "u_name": "partner-egress", "u_forward_method": "proxychain", "u_proxy_gateway": "PARTNER-EGRESS-GW", "u_description": "Partner traffic through the egress gateway", "u_active": "true"}
+  ],
+  "u_fwd_rule": [
+    {"sys_id": "f3001", "number": "FWDR0001001", "u_profile": "fp-direct", "u_match_type": "host_exact", "u_value": "portal.partner-example.com", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3002", "number": "FWDR0001002", "u_profile": "fp-direct", "u_match_type": "ip_cidr", "u_value": "203.0.113.0/24", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3003", "number": "FWDR0001003", "u_profile": "fp-egress", "u_match_type": "host_exact", "u_value": "egress.partner-example.net", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3004", "number": "FWDR0001004", "u_profile": "fp-egress", "u_match_type": "host_exact", "u_value": "old.partner-example.net", "u_state": "retire_requested", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3005", "number": "FWDR0001005", "u_profile": "fp-direct", "u_match_type": "host_exact", "u_value": "expired.partner-example.com", "u_state": "deployed", "u_valid_from": "", "u_valid_to": "2020-01-01 00:00:00", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3006", "number": "FWDR0001006", "u_profile": "fp-egress", "u_match_type": "ip_cidr", "u_value": "203.0.113.5/24", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""},
+    {"sys_id": "f3007", "number": "FWDR0001007", "u_profile": "fp-egress", "u_match_type": "host_exact", "u_value": "portal.partner-example.com", "u_state": "approved", "u_valid_from": "", "u_valid_to": "", "u_deploy_status": "pending", "u_deploy_version": ""}
   ]
 }

@@ -258,9 +258,14 @@ class SimStore:
 
     def load(self) -> Dict[str, Any]:
         if not self.path.exists():
-            return {"next_id": 1, "files": {}, "max_version": {}, "activations": 0}
+            return {"next_id": 1, "files": {}, "max_version": {}, "activations": 0, "url_categories": {}, "url_rules": {},
+                    "forwarding_rules": {}, "proxy_gateways": []}
         state = json.loads(self.path.read_text(encoding="utf-8"))
         state.setdefault("max_version", {})
+        state.setdefault("url_categories", {})
+        state.setdefault("url_rules", {})
+        state.setdefault("forwarding_rules", {})
+        state.setdefault("proxy_gateways", [])
         for f in state["files"].values():
             for v in f["versions"]:  # Phase 1 files stored an ISO string under last_modification_time
                 old = v.pop("last_modification_time", None)
@@ -324,10 +329,163 @@ def _obj(f: Dict[str, Any], v: Dict[str, Any], with_content: bool = True) -> Sim
     return SimObject(data)
 
 
+class SimUrlCategoriesAPI:
+    """client.zia.url_categories: same method names and kwargs as the SDK; objects use the SDK attribute names.
+    Custom category ids are CUSTOM_NN; a category still referenced by a rule cannot be deleted."""
+
+    def __init__(self, store: "SimStore"):
+        self._store = store
+
+    def list_categories(self, query_params: Optional[dict] = None):
+        custom_only = (query_params or {}).get("custom_only")
+        items = [c for c in self._store.load()["url_categories"].values() if c.get("custom_category") or not custom_only]
+        return [SimObject(c) for c in items], None, None
+
+    def add_url_category(self, super_category: str, urls: Optional[List[str]] = None, configured_name: Optional[str] = None,
+                         **kwargs):
+        state = self._store.load()
+        if any(c["configured_name"] == configured_name for c in state["url_categories"].values()):
+            return None, None, f"a URL category named '{configured_name}' already exists"
+        n = state["next_category"] = state.get("next_category", 0) + 1
+        cat = {"id": f"CUSTOM_{n:02d}", "configured_name": configured_name, "super_category": super_category,
+               "urls": list(urls or []), "description": kwargs.get("description"),
+               "custom_category": bool(kwargs.get("custom_category"))}
+        state["url_categories"][cat["id"]] = cat
+        state["unactivated"] = True
+        self._store.save(state)
+        return SimObject(cat), None, None
+
+    def update_url_category(self, category_id: str, action: Optional[str] = None, **kwargs):
+        state = self._store.load()
+        cat = state["url_categories"].get(category_id)
+        if cat is None:
+            return None, None, f"URL category {category_id} not found"
+        cat.update({k: v for k, v in kwargs.items() if k in ("configured_name", "super_category", "urls", "description")})
+        state["unactivated"] = True
+        self._store.save(state)
+        return SimObject(cat), None, None
+
+    def delete_category(self, category_id: str):
+        state = self._store.load()
+        if category_id not in state["url_categories"]:
+            return None, None, f"URL category {category_id} not found"
+        if any(category_id in r["url_categories"] for r in state["url_rules"].values()):
+            return None, None, f"400: URL category {category_id} is referenced by a URL filtering rule"
+        del state["url_categories"][category_id]
+        state["unactivated"] = True
+        self._store.save(state)
+        return None, None, None
+
+
+class SimUrlFilteringAPI:
+    """client.zia.url_filtering: a rule added without `order` goes to the bottom."""
+
+    def __init__(self, store: "SimStore"):
+        self._store = store
+
+    def list_rules(self, query_params: Optional[dict] = None):
+        return [SimObject(r) for r in self._store.load()["url_rules"].values()], None, None
+
+    def add_rule(self, **kwargs):
+        state = self._store.load()
+        if any(r["name"] == kwargs.get("name") for r in state["url_rules"].values()):
+            return None, None, f"a URL filtering rule named '{kwargs.get('name')}' already exists"
+        n = state["next_rule"] = state.get("next_rule", 1000) + 1
+        order = kwargs.get("order") or max([r["order"] for r in state["url_rules"].values()] + [0]) + 1
+        rule = {"id": n, "order": order, "rank": kwargs.get("rank"), "name": kwargs.get("name"),
+                "action": kwargs.get("action"), "state": kwargs.get("state"),
+                "protocols": kwargs.get("protocols"), "description": kwargs.get("description"),
+                "url_categories": list(kwargs.get("url_categories") or [])}
+        state["url_rules"][str(n)] = rule
+        state["unactivated"] = True
+        self._store.save(state)
+        return SimObject(rule), None, None
+
+    def update_rule(self, rule_id, **kwargs):
+        state = self._store.load()
+        rule = state["url_rules"].get(str(rule_id))
+        if rule is None:
+            return None, None, f"URL filtering rule {rule_id} not found"
+        rule.update(kwargs)
+        state["unactivated"] = True
+        self._store.save(state)
+        return SimObject(rule), None, None
+
+    def delete_rule(self, rule_id):
+        state = self._store.load()
+        if state["url_rules"].pop(str(rule_id), None) is None:
+            return None, None, f"URL filtering rule {rule_id} not found"
+        state["unactivated"] = True
+        self._store.save(state)
+        return None, None, None
+
+
+class SimForwardingControlAPI:
+    """client.zia.forwarding_control: a rule added without `order` goes to the bottom; `proxy_gateway` is read back as
+    an object with .id and .name, like the SDK's CommonBlocks."""
+
+    def __init__(self, store: "SimStore"):
+        self._store = store
+
+    @staticmethod
+    def _obj(rule: Dict[str, Any]) -> SimObject:
+        gw = rule.get("proxy_gateway")
+        return SimObject(dict(rule, proxy_gateway=SimObject(gw) if gw else None))
+
+    def list_rules(self, query_params: Optional[dict] = None):
+        return [self._obj(r) for r in self._store.load()["forwarding_rules"].values()], None, None
+
+    def add_rule(self, **kwargs):
+        state = self._store.load()
+        if any(r["name"] == kwargs.get("name") for r in state["forwarding_rules"].values()):
+            return None, None, f"a forwarding rule named '{kwargs.get('name')}' already exists"
+        if len(kwargs.get("name") or "") > 31:
+            return None, None, "400: forwarding rule names are at most 31 characters"
+        n = state["next_fwd_rule"] = state.get("next_fwd_rule", 2000) + 1
+        order = kwargs.get("order") or max([r["order"] for r in state["forwarding_rules"].values()] + [0]) + 1
+        rule = {"id": n, "order": order, "rank": None, "state": None, "forward_method": None, "dest_addresses": [],
+                "proxy_gateway": None, "description": None, **kwargs}
+        rule["order"] = order
+        state["forwarding_rules"][str(n)] = rule
+        state["unactivated"] = True
+        self._store.save(state)
+        return self._obj(rule), None, None
+
+    def update_rule(self, rule_id, **kwargs):
+        state = self._store.load()
+        rule = state["forwarding_rules"].get(str(rule_id))
+        if rule is None:
+            return None, None, f"forwarding rule {rule_id} not found"
+        rule.update(kwargs)
+        state["unactivated"] = True
+        self._store.save(state)
+        return self._obj(rule), None, None
+
+    def delete_rule(self, rule_id):
+        state = self._store.load()
+        if state["forwarding_rules"].pop(str(rule_id), None) is None:
+            return None, None, f"forwarding rule {rule_id} not found"
+        state["unactivated"] = True
+        self._store.save(state)
+        return None, None, None
+
+
+class SimProxiesAPI:
+    def __init__(self, store: "SimStore"):
+        self._store = store
+
+    def list_proxy_gateways(self):
+        return [SimObject(g) for g in self._store.load()["proxy_gateways"]], None, None
+
+
 class _Zia:
     def __init__(self, store: SimStore, strict_commit: bool):
         self.pac_files = SimPacFilesAPI(store, strict_commit)
         self.activate = SimActivateAPI(store)
+        self.url_categories = SimUrlCategoriesAPI(store)
+        self.url_filtering = SimUrlFilteringAPI(store)
+        self.forwarding_control = SimForwardingControlAPI(store)
+        self.proxies = SimProxiesAPI(store)
 
 
 class SimulatedZscalerClient:
@@ -349,6 +507,34 @@ class SimulatedZscalerClient:
         state = self.store.load()
         state["foreign_pending"] = value
         self.store.save(state)
+
+    def set_proxy_gateways(self, *names: str) -> None:
+        """Test hook: the proxy gateways ZIA has (ids 1, 2, ...)."""
+        state = self.store.load()
+        state["proxy_gateways"] = [{"id": i, "name": n} for i, n in enumerate(names, 1)]
+        self.store.save(state)
+
+    def seed_object(self, kind: str, data: Dict[str, Any]) -> Any:
+        """Test hook: add a URL category (kind "category") or URL filtering rule (kind "rule") as another admin would;
+        fields use the SDK attribute names."""
+        state = self.store.load()
+        if kind == "forwarding":
+            n = state["next_fwd_rule"] = state.get("next_fwd_rule", 2000) + 1
+            data = {"id": n, "order": max([r["order"] for r in state["forwarding_rules"].values()] + [0]) + 1, "rank": 7,
+                    "state": "ENABLED", "forward_method": "DIRECT", "dest_addresses": [], "proxy_gateway": None,
+                    "description": None, **data}
+            state["forwarding_rules"][str(n)] = data
+        elif kind == "category":
+            data = {"id": f"CUSTOM_{len(state['url_categories']) + 90:02d}", "custom_category": True, "super_category":
+                    "USER_DEFINED", "urls": [], "description": None, **data}
+            state["url_categories"][data["id"]] = data
+        else:
+            n = state["next_rule"] = state.get("next_rule", 1000) + 1
+            data = {"id": n, "order": max([r["order"] for r in state["url_rules"].values()] + [0]) + 1, "rank": 7,
+                    "state": "ENABLED", "url_categories": [], "description": None, **data}
+            state["url_rules"][str(n)] = data
+        self.store.save(state)  # pre-existing object: does not mark ZIA pending
+        return SimObject(data)
 
     def pac_files_summary(self) -> List[Dict[str, Any]]:
         """For tests and the demo: every PAC file with its versions (no content)."""

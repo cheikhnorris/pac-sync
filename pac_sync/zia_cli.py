@@ -16,6 +16,7 @@ from .deployer import to_epoch
 from .envfile import ConfigError, stdin_is_interactive
 from .main import (_render_region, history_mode, resolve_pac_id, run_lock, skip_activate_if_pending, zia_session)
 from .writeback import NOT_ACTIVATED
+from .zia_objects import managed_groups
 from .zia_history import normalize_content
 from .zia_messages import parse_commit_message
 
@@ -120,7 +121,8 @@ def lkg(cfg: dict, code: str, version: Optional[int], remove: bool, new_lkg: Opt
 
 def demo_cleanup(cfg: dict, yes: bool = False, out: Callable[[str], None] = print,
                  confirm: Callable[[str], str] = input) -> int:
-    """Delete every PAC file whose name starts with zscaler.pac_name_prefix. Needs only_prefixed: true."""
+    """Delete every PAC file, and every PAC Sync object of an enabled use case, whose name starts with
+    zscaler.pac_name_prefix. Needs only_prefixed: true."""
     z = cfg.get("zscaler") or {}
     if not (z.get("only_prefixed") and z.get("pac_name_prefix")):
         log.error("demo-cleanup refused: it needs zscaler.only_prefixed: true and a zscaler.pac_name_prefix")
@@ -128,17 +130,21 @@ def demo_cleanup(cfg: dict, yes: bool = False, out: Callable[[str], None] = prin
     with zia_session(cfg) as (history, deployer, _name_for):
         prefix = z["pac_name_prefix"]
         files = [f for f in deployer.list_files() if str(f.name).startswith(prefix)]
-        if not files:
+        objects = managed_groups(cfg, deployer)  # rules first, then categories, inside each adapter's delete
+        if not files and not objects:
             out(f"No PAC file starts with '{prefix}': nothing to delete.")
             return 0
         out("PAC files to delete (all their versions):")
         for f in files:
             out(f"  id {f.id}  {f.name}")
+        for _api, zg in objects:
+            out(f"  ZIA object (PAC Sync, use case)  {zg.name}")
         if not yes:
             if not stdin_is_interactive():
                 log.error("demo-cleanup refused: pass --yes when stdin is not interactive")
                 return 2
-            if confirm(f"Delete these {len(files)} PAC file(s)? Type 'delete' to confirm: ").strip() != "delete":
+            if confirm(f"Delete these {len(files)} PAC file(s)" + (f" and {len(objects)} ZIA object(s)" if objects else "")
+                       + "? Type 'delete' to confirm: ").strip() != "delete":
                 log.error("demo-cleanup cancelled")
                 return 2
         skipped = bool(cfg["deploy"].get("activate", True) and skip_activate_if_pending(cfg)
@@ -146,6 +152,9 @@ def demo_cleanup(cfg: dict, yes: bool = False, out: Callable[[str], None] = prin
         for f in files:
             deployer.delete_pac(f.id, name=f.name)
             out(f"deleted {f.name}")
+        for api, zg in objects:
+            api.delete(zg)
+            out(f"deleted {zg.name}")
         rc = _activate(cfg, deployer, skipped)
     if history_mode(cfg) == "zia":
         out("The state file (history.state_file) may still hold pauses for these regions; delete it for a fresh start.")

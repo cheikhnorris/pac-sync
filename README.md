@@ -216,6 +216,7 @@ pac-sync promote --region NA        # deploy the STAGE version you reviewed (ref
 pac-sync rollback --region EMEA --version 41   # redeploy an older ZIA version and pause the region
 pac-sync rollback --region EMEA --to lkg       # redeploy the last known good version (--version and --to are exclusive)
 pac-sync resume --region EMEA       # clear a pause (rollback, "manual change in ZIA") and accept the current ZIA version
+pac-sync resume --use-case url_filtering|forwarding   # same for a use case (see Use cases)
 pac-sync status                     # each region's recorded ZIA state (offline in git modes)
 pac-sync versions --region EMEA     # every ZIA version: status, times, modified by, PAC Sync or manual, +/- PACR, message
 pac-sync diff --region EMEA --from deployed --to render    # N | deployed | staged | lkg  ->  N | deployed | staged | lkg | render
@@ -398,6 +399,50 @@ request stays open; they become `deployed` (and the request closes) on a later r
 until ZIA is active again (the SDK documents a 400 otherwise). `deploy.mark_lkg_after_deploy: true` marks the previous version
 LKG after a successful deploy and activation.
 
+## Use cases: URL filtering
+
+Besides PAC files, PAC Sync can manage ZIA **URL filtering** (off by default). Admins own `u_url_category` records (name,
+action allow / caution / block); requesters add `u_url_rule` entries (one URL each, e.g. `.partner-example.com` or
+`tools.example.net/upload`) to a category. Each category with at least one live entry becomes one custom ZIA URL category
+and one URL filtering rule, both named `zscaler.pac_name_prefix` + category name (`demo-partner-sites`); the rule applies the
+category's action to that category only.
+
+```yaml
+use_cases:
+  state_file: ./pac-state-usecases.json   # git-ignored: pauses, "not activated" marks, last errors
+  url_filtering: {enabled: true, mode: auto, rule_rank: 7, rule_order: null}   # null = new rules go to the bottom
+```
+
+- Needs `zscaler.only_prefixed: true` and a `pac_name_prefix` (exit 3 otherwise), plus `servicenow.tables.url_category` / `url_rule`.
+- Same safety model as PAC files: prefix guard on every write, activation guard (`deploy.skip_activate_if_pending`),
+  guardrails (`guardrails.*`; 0 records while ZIA holds entries is blocked), `run --dry-run` (now reads ZIA, still writes
+  nothing), write-back to `u_url_rule` and `u_pac_deployment` rows (`u_use_case`, `u_object`).
+- Ownership without a state file: each object's description is a PAC Sync message with the sha256 of the managed fields. A
+  hash that no longer matches means someone edited it in the portal: the use case pauses ("manual change in ZIA: <name>")
+  until `pac-sync resume --use-case url_filtering` (then `run` restores the desired state) or `run --force`. A prefixed
+  object whose description is not a PAC Sync message is never modified or deleted, even with `--force`; its group fails.
+- `deploy.live_max_mode: stage` or `paused` forces the use case to `paused`: these objects have no stage step.
+- `status` and `demo-cleanup` include the use case's objects (rules first, then categories). There is no rollback: ZIA keeps no
+  versions of these objects; the history is the `u_pac_deployment` rows, ServiceNow's audit and the message on each object.
+
+## Use cases: traffic forwarding
+
+Off by default, same pattern as URL filtering and the same safety model. Admins own `u_fwd_profile` records (name,
+`u_forward_method` direct or proxychain, `u_proxy_gateway` for proxychain only); requesters add `u_fwd_rule` entries
+(`host_exact` or `ip_cidr` + value) to a profile. Each profile with at least one live entry becomes one ZIA forwarding
+control rule named `zscaler.pac_name_prefix` + profile name (31 characters at most in all) whose `dest_addresses` are the
+entries. A direct profile must not name a gateway, a proxychain profile must. The proxy gateway is only read: a profile
+naming a gateway ZIA does not have fails its own group (`doctor` reports it too).
+
+```yaml
+use_cases:
+  forwarding: {enabled: true, mode: auto, rule_rank: 7, rule_order: null}
+```
+
+Needs `zscaler.auth: oneapi` (the legacy client has no `forwarding_control`; exit 3 otherwise) and
+`servicenow.tables.fwd_profile` / `fwd_rule`. Resume a pause with `pac-sync resume --use-case forwarding`.
+Forwarding rules take effect tenant-wide on activation: check that the demo traffic path is the one you mean.
+
 ## Verify before production
 
 `tests/test_deployer_sdk.py` runs `ZiaDeployer` through the real SDK (URL building, body serialization, response
@@ -416,3 +461,12 @@ The test fake (`tests/fake_zia.py`) copies the same assumptions. Check these in 
    the `lastModificationTime` format (epoch seconds or milliseconds are both handled); the `activate.status()` values (only
    `ACTIVE` counts as clean) and whether it reflects other admins' changes; whether a PAC deploy needs an activation; rate
    limits; the admin role permission names.
+7. URL filtering (none verified against a tenant): `list_categories(custom_only=True)` is honoured; `super_category="USER_DEFINED"`
+   is accepted for a custom category; a rule added without `order` goes to the bottom; the 255-character description limit;
+   ZIA returns `urls` unchanged (otherwise the group looks changed forever); ZIA refuses to delete a category a rule still
+   references; changes need `activate()`; at most 48 custom categories per tenant; `list_rules()` returns every rule (paging).
+   Live-policy risk: a URL filtering rule takes effect tenant-wide on activation. The sample data uses example domains only.
+8. Traffic forwarding (none verified against a tenant): `forwarding_control.add_rule(type="FORWARDING", forward_method=...,
+   proxy_gateway={"id", "name"}, dest_addresses=[...])` is accepted; `proxy_gateway` is echoed back with its name; ZIA returns
+   `dest_addresses` unchanged (CIDRs are not normalised, else permanent drift); a rule added without `order` goes to the
+   bottom; names up to 31 characters; `list_rules()` returns every rule; changes need `activate()`.

@@ -14,3 +14,4 @@ pac-archive/
 config/*.local.yaml
 .pac-sync.lock
 .pac-state-*.json
+pac-state-*.json

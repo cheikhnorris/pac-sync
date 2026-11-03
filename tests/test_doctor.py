@@ -380,3 +380,63 @@ def test_proxy_servicenow_direct_via_no_proxy(proxy_env):
 
 def test_describe_proxy_ipv6_host():
     assert d._describe_proxy("http://[::1]:8080")[1].startswith("http://[::1]:8080 ")
+
+
+def test_use_cases_lines_only_when_enabled(setup):
+    data, run, tmp_path = setup
+    code, out = run()
+    assert "use cases" not in out and "url_filtering" not in out  # disabled: output unchanged
+
+    data["zscaler"].update(pac_name_prefix="demo-", only_prefixed=True)
+    data["servicenow"]["tables"].update(url_category="u_url_category", url_rule="u_url_rule")
+    data["use_cases"] = {"url_filtering": {"enabled": True}}
+    client = SimulatedZscalerClient(str(tmp_path / "sim"))
+    client.seed_object("category", {"configured_name": "demo-by-hand", "description": "hand"})
+    cat, _, _ = client.zia.url_categories.add_url_category("USER_DEFINED", ["a.example.com"], "demo-partner-sites",
+                                                           custom_category=True, description="PAC Sync 20260101T000000Z partner-sites sha256:000000000000")
+    client.zia.url_filtering.add_rule(name="demo-partner-sites", action="ALLOW", state="ENABLED", url_categories=[cat.id],
+                                      description="PAC Sync 20260101T000000Z partner-sites sha256:000000000000")
+    client.zia.activate.activate()
+    _code, out = run()
+    assert "[ OK ] use cases config: enabled: url_filtering" in out
+    assert "[ OK ] zia url_filtering: 1 managed group(s), 1 entries" in out
+    assert "[WARN] zia url_filtering drift: demo-partner-sites was changed in ZIA" in out
+    assert "[WARN] zia url_filtering foreign: demo-by-hand has the prefix but was not created by PAC Sync" in out
+
+    data["use_cases"]["url_filtering"]["mode"] = "wrong"
+    assert "[FAIL] use cases config" in run()[1]
+
+
+def _enable_use_cases(data, key):
+    data["zscaler"].update(pac_name_prefix="demo-", only_prefixed=True)
+    data["servicenow"]["tables"].update(url_category="u_url_category", url_rule="u_url_rule",
+                                        fwd_profile="u_fwd_profile", fwd_rule="u_fwd_rule")
+    data["use_cases"] = {key: {"enabled": True}}
+
+
+def test_use_case_name_too_long_fails(setup, tmp_path):
+    data, run, _ = setup
+    _enable_use_cases(data, "url_filtering")
+    import json
+    sample = json.loads((ROOT / "config" / "servicenow_sample_data.json").read_text(encoding="utf-8"))
+    sample["u_url_category"][0]["u_name"] = "a" * 27  # demo- + 27 > 31
+    path = tmp_path / "sample.json"
+    path.write_text(json.dumps(sample), encoding="utf-8")
+    data["servicenow"]["sample_file"] = str(path)
+    code, out = run()
+    assert f"[FAIL] url_filtering name: 'demo-{'a' * 27}' is longer than 31 characters" in out
+
+
+def test_forwarding_legacy_auth_and_missing_gateway_fail(setup):
+    data, run, tmp_path = setup
+    _enable_use_cases(data, "forwarding")
+    data["zscaler"]["auth"] = "legacy"
+    code, out = run()
+    assert code == 1 and "[FAIL] use cases config: use_cases.forwarding needs zscaler.auth: oneapi" in out
+
+    data["zscaler"]["auth"] = "oneapi"
+    SimulatedZscalerClient(str(tmp_path / "sim")).set_proxy_gateways("OTHER-GW")
+    code, out = run()
+    assert "[FAIL] forwarding gateway: partner-egress: ZIA has no proxy gateway named 'PARTNER-EGRESS-GW'" in out
+    SimulatedZscalerClient(str(tmp_path / "sim")).set_proxy_gateways("PARTNER-EGRESS-GW")
+    assert "forwarding gateway" not in run()[1]

@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from pac_sync.normalizer import validate_value
+from pac_sync.normalizer import validate_gateway_name, validate_object_name, validate_url_entry, validate_value
 
 from .conftest import ROOT
 
@@ -68,3 +68,46 @@ def test_python_and_php_validators_agree():
     mismatches = [(t, v, validate_value(t, v), e) for (t, v), e in zip(CASES, php_errors)
                   if (validate_value(t, v) is None) != (e is None)]
     assert not mismatches, "\n".join(f"{t} {v!r}: python={p!r} php={e!r}" for t, v, p, e in mismatches)
+
+
+URL_CASES = [
+    ".partner-example.com", "partner-example.com", "tools.example.net/upload", "a.b.example.org/x/y_z-1.2~3%20",
+    "reviews.example.com/", "x.co.uk", "partner.co.uk/a", "", " a.com", "a.com ", "exämple.com", "a b.com",
+    'a.com/"x', "a.com/x;y", "a.com\\x", "*.example.com", "a.com/*", "a.com?x=1", "a.com/x#f", "https://a.com",
+    "a.com:8080", "localhost", ".com", "com", "co.uk", ".co.uk", "..a.com", "-a.com", "a..com", "a.com/A", "a.com/x y",
+    "a.com/é", "a" * 250 + ".com", "a.com/" + "x" * 250, "a.com/" + "x" * 249, "a.com\n", "a.com/x\n",
+    "a.com/x\x00", "a.com/x\x0by", "a.com/x y", "A.com", "a.com//x", "a.com/x/../y", "a" * 64 + ".com",
+    ".".join(["a" * 63] * 4), "ma", "x.ma", ".ma",
+]
+NAME_CASES = [
+    "partner-sites", "a", "0abc", "a" * 26, "a" * 27, "", "-a", "a-", "A", "a_b", "a b", "a.b", "a\n", "é", "a\x00",
+]
+GATEWAY_CASES = [
+    "PARTNER-EGRESS-GW", "a", "with space", "a" * 128, "a" * 129, "", 'qu"ote', "back\\slash", "café",
+    "tab\there", "new\nline", "a\n", "nul\x00", "del\x7f", "~tilde!", "it's", "a b",
+]
+
+
+def _php_results(function, cases):
+    php = find_php()
+    if not php or not VALIDATION_PHP.exists():
+        if os.environ.get("PAC_SYNC_REQUIRE_PHP") == "1":
+            pytest.fail("PAC_SYNC_REQUIRE_PHP=1 but php or ../snow-mock is missing")
+        pytest.skip("needs php and ../snow-mock")
+    script = (f"require $argv[1]; $out = [];"
+              f"foreach (json_decode(stream_get_contents(STDIN), true) as $v) {{ $out[] = {function}($v); }}"
+              "echo json_encode($out);")
+    proc = subprocess.run([php, "-r", script, str(VALIDATION_PHP)], input=json.dumps(cases), capture_output=True,
+                          text=True, encoding="utf-8", check=True)
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("function,validate,cases", [
+    ("url_validate_entry", validate_url_entry, URL_CASES),
+    ("zia_validate_object_name", validate_object_name, NAME_CASES),
+    ("fwd_validate_gateway", validate_gateway_name, GATEWAY_CASES),
+])
+def test_python_and_php_url_and_name_validators_agree(function, validate, cases):
+    php_errors = _php_results(function, cases)
+    mismatches = [(v, validate(v), e) for v, e in zip(cases, php_errors) if (validate(v) is None) != (e is None)]
+    assert not mismatches, "\n".join(f"{v!r}: python={p!r} php={e!r}" for v, p, e in mismatches)

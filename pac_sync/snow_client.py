@@ -20,6 +20,7 @@ RULE_FIELDS = (
     "u_state,u_valid_from,u_valid_to,u_change_request,u_deploy_status,u_deploy_version,u_deploy_message,sys_updated_on"
 )
 RULE_QUERY = "u_stateINapproved,deployed,retire_requested^ORDERBYu_priority^ORDERBYnumber"
+ENTRY_QUERY = "u_stateINapproved,deployed,retire_requested^ORDERBYnumber"  # use-case entries have no priority
 
 
 class ServiceNowClient:
@@ -123,6 +124,16 @@ class ServiceNowClient:
     def log_deployment(self, body: dict) -> None:
         self._request("POST", f"/api/now/table/{self.tables['deployment']}", data=json.dumps(body))
 
+    # Use-case tables (url_category / url_rule, ...), addressed by their key in servicenow.tables.
+    def fetch_groups(self, table_key: str, fields: str) -> List[dict]:
+        return self.get_all(self.tables[table_key], "u_active=true", fields)
+
+    def fetch_entries(self, table_key: str, fields: str) -> List[dict]:
+        return self.get_all(self.tables[table_key], ENTRY_QUERY, fields)
+
+    def update_entry(self, table_key: str, sys_id: str, body: dict) -> None:
+        self._request("PATCH", f"/api/now/table/{self.tables[table_key]}/{sys_id}", data=json.dumps(body))
+
 
 class FileServiceNowSource:
     """Offline stand-in for development and tests. Writes are recorded, not sent."""
@@ -133,6 +144,7 @@ class FileServiceNowSource:
         self.tables = cfg["tables"]
         self.rule_updates: List[tuple] = []
         self.deployments: List[dict] = []
+        self.entry_updates: List[tuple] = []  # (table_key, sys_id, body)
 
     def _active(self, table: str) -> List[dict]:
         return [r for r in self._data.get(table, []) if str(r.get("u_active", "true")).lower() == "true"]
@@ -154,6 +166,17 @@ class FileServiceNowSource:
     def log_deployment(self, body: dict) -> None:
         log.info("[file source] POST deployment %s", body)
         self.deployments.append(body)
+
+    def fetch_groups(self, table_key: str, fields: str) -> List[dict]:
+        return self._active(self.tables[table_key])
+
+    def fetch_entries(self, table_key: str, fields: str) -> List[dict]:
+        states = {"approved", "deployed", "retire_requested"}
+        return [r for r in self._data.get(self.tables[table_key], []) if r.get("u_state") in states]
+
+    def update_entry(self, table_key: str, sys_id: str, body: dict) -> None:
+        log.info("[file source] PATCH %s %s %s", table_key, sys_id, body)
+        self.entry_updates.append((table_key, sys_id, body))
 
 
 def make_source(cfg: dict):

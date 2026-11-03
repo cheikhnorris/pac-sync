@@ -30,6 +30,9 @@ PUBLIC_SUFFIXES = {
     "co.uk", "org.uk", "com.au", "co.jp", "com.br", "co.in",
     "de", "fr", "es", "it", "nl", "be", "ch", "uk", "us", "ma",
 }
+OBJECT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,25}")
+GATEWAY_NAME_RE = re.compile(r"[ -~]{1,128}")
+URL_PATH_RE = re.compile(r"/[a-z0-9._~%/-]*")
 SNOW_DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -49,14 +52,56 @@ def parse_snow_datetime(value: str) -> Optional[datetime]:
     return datetime.strptime(value, SNOW_DT_FORMAT).replace(tzinfo=timezone.utc)
 
 
-def validate_value(match_type: str, value: str) -> Optional[str]:
-    """Return an error message, or None when the value is valid for its match type."""
+def _check_chars(value: str) -> Optional[str]:
+    """The printable / forbidden-character checks shared by validate_value and validate_url_entry."""
     if not value:
         return "empty value"
     if NON_PRINTABLE_RE.search(value):
         return "value must be printable ASCII (no spaces, control or non-ASCII characters)"
     if FORBIDDEN_CHARS & set(value):
         return "value contains a forbidden character (quote, semicolon, backslash or whitespace)"
+    return None
+
+
+def validate_object_name(name: str) -> Optional[str]:
+    """A ZIA object (URL category / rule) name: lower-case letters, digits and '-', 1 to 26 characters."""
+    if not OBJECT_NAME_RE.fullmatch(name or ""):
+        return "name must be 1 to 26 characters: lower-case letters, digits and '-', starting with a letter or digit"
+    return None
+
+
+def validate_gateway_name(name: str) -> Optional[str]:
+    """A ZIA proxy gateway name: 1 to 128 printable ASCII characters (spaces allowed), no '"' and no backslash."""
+    if not GATEWAY_NAME_RE.fullmatch(name or "") or '"' in name or chr(92) in name:
+        return "gateway name must be 1 to 128 printable ASCII characters without quotes or backslashes"
+    return None
+
+
+def validate_url_entry(value: str) -> Optional[str]:
+    """A custom URL category entry (`.example.com` or `host.example.com/path`), already trimmed and lower-cased."""
+    error = _check_chars(value)
+    if error:
+        return error
+    if len(value) > 255:
+        return "URL entry is longer than 255 characters"
+    if set("*?#:") & set(value):
+        return "URL entry must not contain '*', '?', '#' or ':' (no wildcard, query, fragment, scheme or port)"
+    host, slash, path = value.partition("/")
+    bare = host[1:] if host.startswith(".") else host
+    if not HOST_RE.match(bare) or "." not in bare:
+        return "URL entry must start with a domain of at least two labels, optionally with a leading '.'"
+    if bare in PUBLIC_SUFFIXES:
+        return f"URL entry '{bare}' is a public suffix"
+    if slash and not URL_PATH_RE.fullmatch(slash + path):
+        return "URL entry path may only contain a-z, 0-9 and . _ ~ % / -"
+    return None
+
+
+def validate_value(match_type: str, value: str) -> Optional[str]:
+    """Return an error message, or None when the value is valid for its match type."""
+    error = _check_chars(value)
+    if error:
+        return error
 
     if match_type == "host_exact":
         if not HOST_RE.match(value):

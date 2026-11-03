@@ -21,6 +21,12 @@ servicenow:
     proxy_profile: u_pac_proxy_profile
     rule: u_pac_rule
     deployment: u_pac_deployment
+    # Use case URL filtering (needs use_cases.url_filtering.enabled below):
+    url_category: u_url_category
+    url_rule: u_url_rule
+    # Use case traffic forwarding (needs use_cases.forwarding.enabled below and zscaler.auth: oneapi):
+    fwd_profile: u_fwd_profile
+    fwd_rule: u_fwd_rule
 
 zscaler:
   # Proxy: no config key. Set HTTPS_PROXY / NO_PROXY / REQUESTS_CA_BUNDLE in .env (or run `pac-sync setup`).
@@ -83,6 +89,22 @@ regions:
     mode: stage
   APAC:
     mode: stage
+
+# Use cases beyond PAC files. Absent block or enabled: false = off (no request is made for them).
+# An enabled use case needs zscaler.only_prefixed: true and a zscaler.pac_name_prefix: every managed ZIA object is named
+# <prefix><group name>. Changes take effect tenant-wide on activation: try it on a demo tenant first.
+# use_cases:
+#   state_file: ./pac-state-usecases.json   # git-ignored; pauses, "not activated" marks, last errors
+#   url_filtering:
+#     enabled: false
+#     mode: auto                   # auto | paused (deploy.live_max_mode stage/paused also forces paused)
+#     rule_rank: 7                 # admin rank of the URL filtering rules
+#     rule_order: null             # null = new rules are appended at the bottom
+#   forwarding:                    # needs zscaler.auth: oneapi; the proxy gateway of a proxychain profile must exist in ZIA
+#     enabled: false
+#     mode: auto
+#     rule_rank: 7
+#     rule_order: null
 
 notify:
   # Optional incoming-webhook URL (Teams / Slack) for change and failure messages
